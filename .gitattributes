@@ -1,0 +1,33 @@
+# Установка окончаний строк для всех файлов
+* text=auto
+
+# Python файлы - всегда LF в репозитории
+*.py text eol=lf
+*.pyw text eol=lf
+
+# Конфигурационные файлы
+*.txt text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# SQL файлы
+*.sql text eol=lf
+
+# Игнорировать бинарные файлы
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Windows специфичные файлы (если нужны CRLF)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
