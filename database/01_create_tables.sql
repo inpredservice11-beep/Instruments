@@ -13,12 +13,21 @@ CREATE TABLE IF NOT EXISTS batch_issues (
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
 
+-- Таблица адресов выдачи
+CREATE TABLE IF NOT EXISTS addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    full_address TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Таблица индивидуальных выдач инструментов, теперь с batch_id
 CREATE TABLE IF NOT EXISTS issues (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id INTEGER,
     instrument_id INTEGER NOT NULL,
     employee_id INTEGER NOT NULL,
+    address_id INTEGER,
     issue_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expected_return_date DATE,
     actual_return_date TIMESTAMP,
@@ -29,5 +38,7 @@ CREATE TABLE IF NOT EXISTS issues (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (batch_id) REFERENCES batch_issues(id),
     FOREIGN KEY (instrument_id) REFERENCES instruments(id),
-    FOREIGN KEY (employee_id) REFERENCES employees(id)
+    FOREIGN KEY (employee_id) REFERENCES employees(id),
+    FOREIGN KEY (address_id) REFERENCES addresses(id)
 );
+

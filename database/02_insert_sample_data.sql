@@ -1,5 +1,11 @@
 -- Тестовые данные для демонстрации работы системы
 
+-- Добавление адресов выдачи
+INSERT INTO addresses (name, full_address) VALUES
+('Стройплощадка №1', 'г. Москва, ул. Промышленная, д. 12'),
+('Цех механической обработки', 'г. Москва, ул. Заводская, д. 7'),
+('Монтажный участок', 'г. Москва, пр-т Строителей, д. 45');
+
 -- Добавление инструментов (каждый уникален)
 INSERT INTO instruments (name, description, inventory_number, serial_number, category, location, purchase_date, price, status) VALUES
 ('Дрель электрическая Makita', 'Ударная дрель 800W', 'INV-001', 'DR-2024-001', 'Электроинструмент', 'Склад А, полка 1', '2024-01-15', 5500.00, 'Доступен'),
@@ -35,10 +41,10 @@ INSERT INTO employees (full_name, position, department, phone, email) VALUES
 ('Морозов Алексей Владимирович', 'Слесарь-ремонтник', 'Ремонтный участок', '+7-900-890-1234', 'morozov@company.ru');
 
 -- Примеры выдач (некоторые возвращены, некоторые еще на руках)
-INSERT INTO issues (instrument_id, employee_id, issue_date, expected_return_date, actual_return_date, status, notes, issued_by) VALUES
-(3, 1, '2024-10-20 08:30:00', '2024-11-05', NULL, 'Выдан', 'Для сверления отверстий в металле', 'Кладовщик Смирнов'),
-(4, 4, '2024-10-15 09:00:00', '2024-10-30', NULL, 'Выдан', 'Работы по бетону', 'Кладовщик Смирнов'),
-(8, 2, '2024-10-20 10:15:00', '2024-11-01', NULL, 'Выдан', 'Монтажные работы', 'Кладовщик Смирнов');
+INSERT INTO issues (instrument_id, employee_id, address_id, issue_date, expected_return_date, actual_return_date, status, notes, issued_by) VALUES
+(3, 1, 1, '2024-10-20 08:30:00', '2024-11-05', NULL, 'Выдан', 'Для сверления отверстий в металле', 'Кладовщик Смирнов'),
+(4, 4, 2, '2024-10-15 09:00:00', '2024-10-30', NULL, 'Выдан', 'Работы по бетону', 'Кладовщик Смирнов'),
+(8, 2, 3, '2024-10-20 10:15:00', '2024-11-01', NULL, 'Выдан', 'Монтажные работы', 'Кладовщик Смирнов');
 
 -- История операций
 INSERT INTO operation_history (issue_id, operation_type, instrument_id, employee_id, operation_date, performed_by, notes) VALUES

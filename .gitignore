@@ -2,6 +2,7 @@
 *.db
 *.sqlite
 *.sqlite3
+tool_management.db
 
 # Python
 __pycache__/
@@ -43,11 +44,15 @@ venv.bak/
 .DS_Store
 Thumbs.db
 
-# Конфигурация окон
+# Конфигурация окон (персональные настройки)
 window_config.json
 
+# Пустые директории
+documentation/
+queries/
+reports/
 
-
-
-
-
+# Временные файлы
+*.tmp
+*.log
+*.bak

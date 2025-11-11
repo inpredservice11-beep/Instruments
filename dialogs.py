@@ -116,6 +116,148 @@ def create_russian_date_entry(parent, **kwargs):
 
 # ========== ИНСТРУМЕНТЫ ==========
 
+
+class AddAddressDialog:
+    def __init__(self, parent, db, callback=None):
+        self.db = db
+        self.callback = callback
+        self.result_id = None
+
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Добавить адрес")
+        default_geometry = "420x220"
+        window_config.restore_window(self.dialog, "AddAddressDialog", default_geometry)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Закрытие по ESC
+        self.dialog.bind('<Escape>', lambda e: self.dialog.destroy())
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        main_frame = ttk.Frame(self.dialog, padding="15")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Название адреса*:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.name_entry = ttk.Entry(main_frame, width=45)
+        self.name_entry.grid(row=0, column=1, pady=5, sticky=tk.W)
+
+        ttk.Label(main_frame, text="Полный адрес:").grid(row=1, column=0, sticky=tk.NW, pady=5)
+        self.full_address_text = tk.Text(main_frame, width=44, height=4)
+        self.full_address_text.grid(row=1, column=1, pady=5, sticky=tk.W)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, columnspan=2, pady=15)
+
+        ttk.Button(
+            button_frame,
+            text="Сохранить",
+            command=self.save
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Отмена",
+            command=self.dialog.destroy
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.name_entry.focus_set()
+
+    def save(self):
+        name = self.name_entry.get().strip()
+        full_address = self.full_address_text.get("1.0", tk.END).strip()
+
+        if not name:
+            messagebox.showerror("Ошибка", "Введите название адреса")
+            return
+
+        success, result = self.db.add_address(name, full_address)
+        if not success:
+            messagebox.showerror("Ошибка", f"Не удалось сохранить адрес:\n{result}")
+            return
+
+        self.result_id = result
+        messagebox.showinfo("Успех", "Адрес добавлен")
+        if self.callback:
+            self.callback()
+        self.dialog.destroy()
+
+
+class EditAddressDialog:
+    def __init__(self, parent, db, address_id, callback):
+        self.db = db
+        self.address_id = address_id
+        self.callback = callback
+        
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Редактировать адрес")
+        default_geometry = "420x220"
+        window_config.restore_window(self.dialog, "EditAddressDialog", default_geometry)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        
+        # Закрытие по ESC
+        self.dialog.bind('<Escape>', lambda e: self.dialog.destroy())
+        
+        self.load_data()
+        self.create_widgets()
+        
+    def load_data(self):
+        address = self.db.get_address_by_id(self.address_id)
+        if address:
+            self.address_data = {
+                'name': address[1],
+                'full_address': address[2] or ''
+            }
+    
+    def create_widgets(self):
+        main_frame = ttk.Frame(self.dialog, padding="15")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(main_frame, text="Название адреса*:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        self.name_entry = ttk.Entry(main_frame, width=45)
+        self.name_entry.insert(0, self.address_data['name'])
+        self.name_entry.grid(row=0, column=1, pady=5, sticky=tk.W)
+
+        ttk.Label(main_frame, text="Полный адрес:").grid(row=1, column=0, sticky=tk.NW, pady=5)
+        self.full_address_text = tk.Text(main_frame, width=44, height=4)
+        self.full_address_text.insert("1.0", self.address_data['full_address'])
+        self.full_address_text.grid(row=1, column=1, pady=5, sticky=tk.W)
+
+        button_frame = ttk.Frame(main_frame)
+        button_frame.grid(row=2, column=0, columnspan=2, pady=15)
+
+        ttk.Button(
+            button_frame,
+            text="Сохранить",
+            command=self.save
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="Отмена",
+            command=self.dialog.destroy
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.name_entry.focus_set()
+    
+    def save(self):
+        name = self.name_entry.get().strip()
+        full_address = self.full_address_text.get("1.0", tk.END).strip()
+
+        if not name:
+            messagebox.showerror("Ошибка", "Введите название адреса")
+            return
+
+        success, message = self.db.update_address(self.address_id, name, full_address)
+        if success:
+            messagebox.showinfo("Успех", message)
+            self.callback()
+            self.dialog.destroy()
+        else:
+            messagebox.showerror("Ошибка", f"Не удалось обновить адрес:\n{message}")
+
 class AddInstrumentDialog:
     def __init__(self, parent, db, callback):
         self.db = db
@@ -144,7 +286,7 @@ class AddInstrumentDialog:
             ("Инвентарный номер*:", "inventory_number"),
             ("Серийный номер:", "serial_number"),
             ("Категория:", "category"),
-            ("Местоположение:", "location"),
+            ("Адрес:", "location"),
             ("Дата покупки:", "purchase_date"),
             ("Цена:", "price"),
         ]
@@ -285,7 +427,7 @@ class EditInstrumentDialog:
             ("Инвентарный номер*:", "inventory_number"),
             ("Серийный номер:", "serial_number"),
             ("Категория:", "category"),
-            ("Местоположение:", "location"),
+            ("Адрес:", "location"),
             ("Дата покупки:", "purchase_date"),
             ("Цена:", "price"),
         ]
@@ -593,6 +735,8 @@ class IssueInstrumentDialog:
         
         # Список выбранных инструментов для выдачи
         self.selected_instruments = []  # Список кортежей (instrument_id, display_text)
+        self.address_placeholder = "Не указан"
+        self.address_display_to_id = {}
         
         self.load_data()
         self.create_widgets()
@@ -652,6 +796,54 @@ class IssueInstrumentDialog:
                     self.employee_combo['values'] = self.all_employee_values
             
             self._employee_update_id = self.dialog.after(100, do_update)
+    
+    def _format_address_display(self, address_row):
+        """Формирование строки отображения адреса"""
+        if not address_row:
+            return ""
+        _, name, full_address = address_row
+        name = (name or '').strip()
+        full_address = (full_address or '').strip()
+
+        if full_address and full_address.lower() != name.lower():
+            return f"{name} — {full_address}" if name else full_address
+        return name or full_address
+
+    def refresh_address_values(self, selected_id=None):
+        """Обновление списка адресов"""
+        addresses = self.db.get_addresses()
+        self.address_display_to_id = {}
+
+        values = []
+        for address in addresses:
+            display = self._format_address_display(address)
+            if not display:
+                display = f"Адрес #{address[0]}"
+            self.address_display_to_id[display] = address[0]
+            values.append(display)
+
+        combo_values = [self.address_placeholder] + values
+        if hasattr(self, 'address_combo'):
+            self.address_combo['values'] = combo_values
+
+        if selected_id:
+            for display, addr_id in self.address_display_to_id.items():
+                if addr_id == selected_id:
+                    self.address_var.set(display)
+                    break
+            else:
+                self.address_var.set(self.address_placeholder)
+        else:
+            current_value = self.address_var.get() if hasattr(self, 'address_var') else ''
+            if current_value not in combo_values:
+                self.address_var.set(self.address_placeholder)
+
+    def open_add_address_dialog(self):
+        """Открытие диалога добавления адреса"""
+        dialog = AddAddressDialog(self.dialog, self.db, callback=lambda: self.refresh_address_values())
+        self.dialog.wait_window(dialog.dialog)
+        if dialog.result_id:
+            self.refresh_address_values(selected_id=dialog.result_id)
     
     def load_data(self):
         # Загрузка списка инструментов (только доступные)
@@ -740,9 +932,26 @@ class IssueInstrumentDialog:
         self.employee_var.trace_add('write', lambda *args: self.update_employee_values())
         self.employee_combo = employee_combo
         self.all_employee_values = list(self.employee_dict.keys())
+
+        # Адрес выдачи
+        ttk.Label(main_frame, text="Адрес выдачи:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        self.address_var = tk.StringVar()
+        self.address_combo = ttk.Combobox(
+            main_frame,
+            textvariable=self.address_var,
+            state='readonly',
+            width=40
+        )
+        self.address_combo.grid(row=4, column=1, pady=5, sticky=tk.W)
+        ttk.Button(
+            main_frame,
+            text="Добавить адрес",
+            command=self.open_add_address_dialog
+        ).grid(row=4, column=2, pady=5, padx=5, sticky=tk.W)
+        self.refresh_address_values()
         
         # Ожидаемая дата возврата
-        ttk.Label(main_frame, text="Ожидаемая дата возврата:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Ожидаемая дата возврата:").grid(row=5, column=0, sticky=tk.W, pady=5)
         default_date = datetime.now() + timedelta(days=7)
         self.return_date = create_russian_date_entry(
             main_frame, 
@@ -750,22 +959,22 @@ class IssueInstrumentDialog:
             date_pattern='yyyy-mm-dd'
         )
         self.return_date.set_date(default_date)
-        self.return_date.grid(row=4, column=1, pady=5, sticky=tk.W)
+        self.return_date.grid(row=5, column=1, pady=5, sticky=tk.W)
         
         # Выдал
-        ttk.Label(main_frame, text="Выдал*:").grid(row=5, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Выдал*:").grid(row=6, column=0, sticky=tk.W, pady=5)
         self.issued_by_entry = ttk.Entry(main_frame, width=42)
         self.issued_by_entry.insert(0, "Кладовщик")
-        self.issued_by_entry.grid(row=5, column=1, pady=5, sticky=tk.W)
+        self.issued_by_entry.grid(row=6, column=1, pady=5, sticky=tk.W)
         
         # Примечание
-        ttk.Label(main_frame, text="Примечание:").grid(row=6, column=0, sticky=tk.W, pady=5)
+        ttk.Label(main_frame, text="Примечание:").grid(row=7, column=0, sticky=tk.W, pady=5)
         self.notes_text = tk.Text(main_frame, width=42, height=4)
-        self.notes_text.grid(row=6, column=1, pady=5, sticky=tk.W)
+        self.notes_text.grid(row=7, column=1, pady=5, sticky=tk.W)
         
         # Кнопки
         button_frame = ttk.Frame(main_frame)
-        button_frame.grid(row=7, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=8, column=0, columnspan=2, pady=20)
         
         ttk.Button(
             button_frame,
@@ -868,6 +1077,18 @@ class IssueInstrumentDialog:
             messagebox.showerror("Ошибка", "Введите, кто выдает инструмент")
             return
         
+        address_id = None
+        if hasattr(self, 'address_var'):
+            address_value = self.address_var.get().strip()
+            if address_value and address_value != self.address_placeholder:
+                address_id = self.address_display_to_id.get(address_value)
+                if address_id is None:
+                    messagebox.showerror(
+                        "Ошибка", 
+                        "Выберите адрес из списка или добавьте новый с помощью кнопки 'Добавить адрес'"
+                    )
+                    return
+        
         # Получение ID сотрудника
         if employee_text in self.employee_dict:
             selected_employee = self.employee_dict[employee_text]
@@ -897,7 +1118,7 @@ class IssueInstrumentDialog:
         
         for instrument_id, display_text in self.selected_instruments:
             success, message = self.db.issue_instrument(
-                instrument_id, employee_id, return_date, notes, issued_by
+                instrument_id, employee_id, return_date, notes, issued_by, address_id=address_id
             )
             
             if success:
@@ -956,6 +1177,10 @@ class ReturnInstrumentDialog:
         ttk.Label(info_frame, text=f"Инструмент: {self.issue[3]}").pack(anchor=tk.W)
         ttk.Label(info_frame, text=f"Сотрудник: {self.issue[5]}").pack(anchor=tk.W)
         ttk.Label(info_frame, text=f"Дата выдачи: {self.issue[6]}").pack(anchor=tk.W)
+        
+        address_display = self.issue[11] or self.issue[10]
+        if address_display:
+            ttk.Label(info_frame, text=f"Адрес: {address_display}").pack(anchor=tk.W)
         
         if self.issue[8]:
             ttk.Label(info_frame, text=f"Примечание при выдаче: {self.issue[8]}").pack(anchor=tk.W)

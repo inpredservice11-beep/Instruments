@@ -4,7 +4,7 @@
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import sqlite3
 from datetime import datetime, timedelta
 import sys
@@ -12,10 +12,12 @@ import platform
 
 from database_manager import DatabaseManager
 from window_config import WindowConfig
+from pdf_export import PDFExporter
 from dialogs import (
     AddInstrumentDialog, EditInstrumentDialog,
     AddEmployeeDialog, EditEmployeeDialog,
-    IssueInstrumentDialog, ReturnInstrumentDialog
+    IssueInstrumentDialog, ReturnInstrumentDialog,
+    AddAddressDialog, EditAddressDialog
 )
 
 # Исправление размытости шрифтов на Windows (high DPI)
@@ -31,10 +33,10 @@ if platform.system() == 'Windows':
 TABLES_CONFIG = {
     'instruments': {
         'columns': ('ID', 'Название', 'Инв. номер', 'Серийный номер', 'Категория', 
-                   'Местоположение', 'Статус'),
+                   'Адрес выдачи', 'Статус'),
         'column_widths': {
             'ID': 50, 'Название': 220, 'Инв. номер': 110, 'Серийный номер': 120,
-            'Категория': 160, 'Местоположение': 160, 'Статус': 110
+            'Категория': 160, 'Адрес выдачи': 200, 'Статус': 110
         }
     },
     'employees': {
@@ -46,31 +48,39 @@ TABLES_CONFIG = {
     },
     'issues': {
         'columns': ('ID', 'Инв. номер', 'Инструмент', 'Сотрудник', 
-                   'Дата выдачи', 'Ожид. возврат', 'Выдал', 'Примечание'),
+                   'Адрес', 'Дата выдачи', 'Ожид. возврат', 'Выдал', 'Примечание'),
         'column_widths': {
             'ID': 50, 'Инв. номер': 110, 'Инструмент': 200, 'Сотрудник': 180,
-            'Дата выдачи': 130, 'Ожид. возврат': 110, 'Выдал': 140, 'Примечание': 200
+            'Адрес': 220, 'Дата выдачи': 130, 'Ожид. возврат': 110,
+            'Выдал': 140, 'Примечание': 200
         }
     },
     'returns': {
         'columns': ('ID', 'Инв. номер', 'Инструмент', 'Сотрудник', 
-                   'Дата выдачи', 'Ожид. возврат', 'Дней в использовании'),
+                   'Адрес', 'Дата выдачи', 'Ожид. возврат', 'Дней в использовании'),
         'column_widths': {
             'ID': 50, 'Инв. номер': 110, 'Инструмент': 230, 'Сотрудник': 200,
-            'Дата выдачи': 130, 'Ожид. возврат': 120, 'Дней в использовании': 160
+            'Адрес': 220, 'Дата выдачи': 130, 'Ожид. возврат': 120, 'Дней в использовании': 160
         },
         'tags': {'overdue': {'background': '#ffcccc'}}
     },
     'history': {
         'columns': ('ID', 'Тип', 'Инв. номер', 'Инструмент', 'Сотрудник', 
-                   'Дата операции', 'Выполнил', 'Примечание'),
+                   'Адрес', 'Дата операции', 'Выполнил', 'Примечание'),
         'column_widths': {
             'ID': 50, 'Тип': 80, 'Инв. номер': 110, 'Инструмент': 200,
-            'Сотрудник': 180, 'Дата операции': 140, 'Выполнил': 140, 'Примечание': 200
+            'Сотрудник': 180, 'Адрес': 220, 'Дата операции': 140,
+            'Выполнил': 140, 'Примечание': 200
         },
         'tags': {
             'issue': {'background': '#ffffcc'},
             'return': {'background': '#ccffcc'}
+        }
+    },
+    'addresses': {
+        'columns': ('ID', 'Название', 'Полный адрес'),
+        'column_widths': {
+            'ID': 50, 'Название': 250, 'Полный адрес': 500
         }
     }
 }
@@ -113,12 +123,8 @@ class ToolManagementApp:
         # Инициализация базы данных
         self.db = DatabaseManager()
         
-        # Настройка стиля для увеличения расстояния между строками
-        style = ttk.Style()
-        style.configure("Treeview", rowheight=30)
-        
-        # Настройка шрифта заголовков вкладок
-        style.configure("TNotebook.Tab", font=("Arial", 12, "bold"), padding=[15, 8])
+        # Настройка стиля в стиле MS Office
+        self.setup_office_style()
         
         # Состояние сортировки для каждой таблицы: {column: 'asc'/'desc'}
         self.sort_states = {
@@ -126,7 +132,9 @@ class ToolManagementApp:
             'employees': {'column': None, 'direction': 'asc'},
             'issues': {'column': None, 'direction': 'asc'},
             'returns': {'column': None, 'direction': 'asc'},
-            'history': {'column': None, 'direction': 'asc'}
+            'history': {'column': None, 'direction': 'asc'},
+            'statistics': {'column': None, 'direction': 'asc'},
+            'addresses': {'column': None, 'direction': 'asc'}
         }
         
         # Маппинг имен таблиц на виджеты Treeview (инициализируется после создания вкладок)
@@ -135,23 +143,195 @@ class ToolManagementApp:
         # Создание интерфейса
         self.create_widgets()
         self.load_data()
+    
+    def setup_office_style(self):
+        """Настройка стиля в стиле MS Office"""
+        style = ttk.Style()
+        
+        # Определяем шрифт (Segoe UI для Windows, иначе Arial)
+        if platform.system() == 'Windows':
+            try:
+                # Пробуем использовать Segoe UI
+                default_font = ("Segoe UI", 9)
+                title_font = ("Segoe UI", 16, "bold")
+                tab_font = ("Segoe UI", 11, "bold")
+            except:
+                default_font = ("Arial", 9)
+                title_font = ("Arial", 16, "bold")
+                tab_font = ("Arial", 11, "bold")
+        else:
+            default_font = ("Arial", 9)
+            title_font = ("Arial", 16, "bold")
+            tab_font = ("Arial", 11, "bold")
+        
+        self.default_font = default_font
+        self.title_font = title_font
+        self.tab_font = tab_font
+        
+        # Цветовая схема MS Office
+        self.office_colors = {
+            'bg_main': '#f3f3f3',  # Светло-серый фон
+            'bg_white': '#ffffff',  # Белый
+            'bg_header': '#2b579a',  # Синий заголовок (Office blue)
+            'bg_header_light': '#4472c4',  # Светло-синий
+            'fg_header': '#4472c4',  # Светло-желтый текст на заголовке
+            'fg_main': '#323130',  # Темно-серый текст
+            'fg_secondary': '#605e5c',  # Серый текст
+            'border': '#d2d0ce',  # Светло-серая граница
+            'hover': '#e1dfdd',  # Цвет при наведении
+            'selected': '#0078d4',  # Синий выбранный элемент
+            'accent': '#0078d4',  # Акцентный синий
+        }
+        
+        # Настройка фона главного окна
+        self.root.configure(bg=self.office_colors['bg_main'])
+        
+        # Настройка Treeview
+        style.configure("Treeview", 
+                       rowheight=32,
+                       background=self.office_colors['bg_white'],
+                       foreground=self.office_colors['fg_main'],
+                       fieldbackground=self.office_colors['bg_white'],
+                       font=default_font,
+                       borderwidth=1,
+                       relief='flat')
+        
+        style.map("Treeview",
+                 background=[('selected', self.office_colors['selected'])],
+                 foreground=[('selected', '#ffffff')])
+        
+        # Настройка заголовков Treeview
+        style.configure("Treeview.Heading",
+                      background=self.office_colors['bg_header'],
+                      foreground=self.office_colors['fg_header'],
+                      font=(default_font[0], default_font[1], "bold"),
+                      relief='flat',
+                      borderwidth=0,
+                      padding=8)
+        
+        style.map("Treeview.Heading",
+                 background=[('active', self.office_colors['bg_header_light'])])
+        
+        # Настройка вкладок (Notebook)
+        style.configure("TNotebook",
+                       background=self.office_colors['bg_main'],
+                       borderwidth=0)
+        
+        style.configure("TNotebook.Tab",
+                       font=tab_font,
+                       padding=[20, 10],
+                       background=self.office_colors['bg_white'],
+                       foreground=self.office_colors['fg_main'],
+                       borderwidth=1,
+                       relief='flat')
+        
+        style.map("TNotebook.Tab",
+                 background=[('selected', self.office_colors['bg_white']),
+                            ('!selected', self.office_colors['bg_main'])],
+                 expand=[('selected', [1, 1, 1, 0])])
+        
+        # Настройка кнопок
+        style.configure("TButton",
+                       font=default_font,
+                       padding=[12, 6],
+                       relief='flat',
+                       borderwidth=1)
+        
+        style.map("TButton",
+                 background=[('active', self.office_colors['hover']),
+                            ('!active', self.office_colors['bg_white'])],
+                 foreground=[('active', self.office_colors['fg_main']),
+                            ('!active', self.office_colors['fg_main'])],
+                 bordercolor=[('active', self.office_colors['border']),
+                             ('!active', self.office_colors['border'])],
+                 focuscolor=[('', 'none')])
+        
+        # Настройка Frame
+        style.configure("TFrame",
+                      background=self.office_colors['bg_white'])
+        
+        # Настройка Label
+        style.configure("TLabel",
+                       background=self.office_colors['bg_white'],
+                       foreground=self.office_colors['fg_main'],
+                       font=default_font)
+        
+        # Настройка Entry
+        style.configure("TEntry",
+                      fieldbackground=self.office_colors['bg_white'],
+                      foreground=self.office_colors['fg_main'],
+                      borderwidth=1,
+                      relief='flat',
+                      font=default_font,
+                      padding=6)
+        
+        style.map("TEntry",
+                 bordercolor=[('focus', self.office_colors['selected']),
+                             ('!focus', self.office_colors['border'])],
+                 lightcolor=[('focus', self.office_colors['selected']),
+                           ('!focus', self.office_colors['border'])],
+                 darkcolor=[('focus', self.office_colors['selected']),
+                           ('!focus', self.office_colors['border'])])
+        
+        # Настройка Combobox
+        style.configure("TCombobox",
+                      fieldbackground=self.office_colors['bg_white'],
+                      foreground=self.office_colors['fg_main'],
+                      borderwidth=1,
+                      relief='flat',
+                      font=default_font,
+                      padding=6)
+        
+        style.map("TCombobox",
+                 fieldbackground=[('readonly', self.office_colors['bg_white'])],
+                 bordercolor=[('focus', self.office_colors['selected']),
+                             ('!focus', self.office_colors['border'])])
+        
+        # Настройка LabelFrame
+        style.configure("TLabelframe",
+                       background=self.office_colors['bg_white'],
+                       borderwidth=1,
+                       relief='flat')
+        
+        style.configure("TLabelframe.Label",
+                       background=self.office_colors['bg_white'],
+                       foreground=self.office_colors['fg_main'],
+                       font=(default_font[0], default_font[1], "bold"))
         
     def create_widgets(self):
-        """Создание элементов интерфейса"""
-        # Заголовок
-        title_frame = ttk.Frame(self.root, padding="10")
-        title_frame.pack(fill=tk.X)
+        """Создание элементов интерфейса в стиле MS Office"""
+        # Верхняя панель (Header) в стиле MS Office
+        header_frame = tk.Frame(self.root, bg=self.office_colors['bg_header'], height=60)
+        header_frame.pack(fill=tk.X)
+        header_frame.pack_propagate(False)
         
-        title_label = ttk.Label(
-            title_frame, 
+        # Заголовок приложения
+        title_label = tk.Label(
+            header_frame,
             text="Система учета выдачи и возврата инструмента",
-            font=("Arial", 16, "bold")
+            font=self.title_font,
+            bg=self.office_colors['bg_header'],
+            fg=self.office_colors['fg_header'],
+            pady=15
         )
         title_label.pack()
         
+        # Панель инструментов (Toolbar) в стиле MS Office
+        toolbar_frame = tk.Frame(self.root, bg=self.office_colors['bg_white'], height=50)
+        toolbar_frame.pack(fill=tk.X, padx=0, pady=0)
+        toolbar_frame.pack_propagate(False)
+        
+        # Внутренний фрейм для кнопок панели инструментов
+        toolbar_inner = tk.Frame(toolbar_frame, bg=self.office_colors['bg_white'])
+        toolbar_inner.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        
+        # Разделитель
+        separator = tk.Frame(self.root, bg=self.office_colors['border'], height=1)
+        separator.pack(fill=tk.X)
+        
         # Notebook для вкладок
         self.notebook = ttk.Notebook(self.root)
-        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
         
         # Вкладки
         self.create_instruments_tab()
@@ -159,61 +339,108 @@ class ToolManagementApp:
         self.create_issues_tab()
         self.create_returns_tab()
         self.create_history_tab()
+        self.create_addresses_tab()
+        self.create_statistics_tab()
     
-    def _create_button(self, parent, text, command, side=tk.LEFT):
-        """Создание кнопки с единообразным стилем"""
-        button = ttk.Button(parent, text=text, command=command)
-        button.pack(side=side, padx=BUTTON_PADDING)
+    def _create_button(self, parent, text, command, side=tk.LEFT, style='default'):
+        """Создание кнопки в стиле MS Office"""
+        if style == 'primary':
+            # Основная кнопка (синяя)
+            btn_frame = tk.Frame(parent, bg=self.office_colors['bg_white'])
+            btn_frame.pack(side=side, padx=2)
+            
+            button = tk.Button(
+                btn_frame,
+                text=text,
+                command=command,
+                bg=self.office_colors['selected'],
+                fg='#ffffff',
+                font=self.default_font,
+                relief='flat',
+                padx=16,
+                pady=8,
+                cursor='hand2',
+                activebackground=self.office_colors['bg_header_light'],
+                activeforeground='#ffffff',
+                borderwidth=0
+            )
+            button.pack()
+        else:
+            # Обычная кнопка
+            button = ttk.Button(parent, text=text, command=command)
+            button.pack(side=side, padx=2)
+        
         return button
     
     def _create_search_widget(self, parent, on_change_callback):
-        """Создание виджета поиска"""
-        search_frame = ttk.Frame(parent)
+        """Создание виджета поиска в стиле MS Office"""
+        search_frame = tk.Frame(parent, bg=self.office_colors['bg_white'])
         search_frame.pack(side=tk.RIGHT, padx=5)
         
-        ttk.Label(search_frame, text="Поиск:").pack(side=tk.LEFT)
+        tk.Label(
+            search_frame,
+            text="Поиск:",
+            bg=self.office_colors['bg_white'],
+            fg=self.office_colors['fg_main'],
+            font=self.default_font
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        
         search_entry = ttk.Entry(search_frame, width=30)
         search_entry.pack(side=tk.LEFT, padx=5)
         search_entry.bind('<KeyRelease>', lambda e: on_change_callback())
         return search_entry
     
     def _create_treeview(self, parent, table_name):
-        """Создание таблицы Treeview с настройками"""
+        """Создание таблицы Treeview с настройками в стиле MS Office"""
         config = TABLES_CONFIG[table_name]
         columns = config['columns']
         column_widths = config['column_widths']
         tags = config.get('tags', {})
         
-        tree = ttk.Treeview(parent, columns=columns, show='headings', height=TREEVIEW_HEIGHT)
+        # Контейнер для таблицы
+        tree_container = tk.Frame(parent, bg=self.office_colors['bg_white'])
+        tree_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=TREEVIEW_HEIGHT)
         
         # Настройка столбцов
         for col in columns:
             tree.column(col, width=column_widths.get(col, 100))
             tree.heading(col, text=col, command=lambda c=col: self.sort_treeview(table_name, c))
         
-        # Настройка тегов
+        # Настройка тегов с обновленными цветами
         for tag_name, tag_config in tags.items():
-            tree.tag_configure(tag_name, **tag_config)
+            # Обновляем цвета тегов в стиле Office
+            updated_config = tag_config.copy()
+            if 'background' in updated_config:
+                # Сохраняем оригинальные цвета, но делаем их более мягкими
+                if updated_config['background'] == '#ffcccc':  # overdue
+                    updated_config['background'] = '#fff4f4'
+                elif updated_config['background'] == '#ffffcc':  # issue
+                    updated_config['background'] = '#fffef0'
+                elif updated_config['background'] == '#ccffcc':  # return
+                    updated_config['background'] = '#f0f9f0'
+            tree.tag_configure(tag_name, **updated_config)
         
         # Скроллбар
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
+        scrollbar = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscroll=scrollbar.set)
         
-        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 5))
+        tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         return tree
     
     def _create_control_frame(self, tab):
-        """Создание панели управления для вкладки"""
-        control_frame = ttk.Frame(tab, padding="5")
+        """Создание панели управления для вкладки в стиле MS Office"""
+        control_frame = tk.Frame(tab, bg=self.office_colors['bg_white'], padx=10, pady=8)
         control_frame.pack(fill=tk.X)
         return control_frame
         
     def create_instruments_tab(self):
         """Вкладка управления инструментами"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Инструменты")
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="🔧 Инструменты")
         
         control_frame = self._create_control_frame(tab)
         
@@ -228,8 +455,8 @@ class ToolManagementApp:
         
     def create_employees_tab(self):
         """Вкладка управления сотрудниками"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Сотрудники")
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="👥 Сотрудники")
         
         control_frame = self._create_control_frame(tab)
         
@@ -244,18 +471,25 @@ class ToolManagementApp:
         
     def create_issues_tab(self):
         """Вкладка выдачи инструмента"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Выдача инструмента")
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="📤 Выдача инструмента")
         
         control_frame = self._create_control_frame(tab)
         
         self._create_button(control_frame, "Выдать инструмент", self.issue_instrument)
         self._create_button(control_frame, "Обновить", self.load_active_issues)
+        self._create_button(control_frame, "Экспорт в PDF", self.export_issues_to_pdf)
         
         # Статистика
-        stats_frame = ttk.Frame(control_frame)
+        stats_frame = tk.Frame(control_frame, bg=self.office_colors['bg_white'])
         stats_frame.pack(side=tk.RIGHT, padx=5)
-        self.stats_label = ttk.Label(stats_frame, text="", font=("Arial", 10))
+        self.stats_label = tk.Label(
+            stats_frame,
+            text="",
+            font=self.default_font,
+            bg=self.office_colors['bg_white'],
+            fg=self.office_colors['fg_secondary']
+        )
         self.stats_label.pack()
         
         self.issues_tree = self._create_treeview(tab, 'issues')
@@ -263,8 +497,8 @@ class ToolManagementApp:
         
     def create_returns_tab(self):
         """Вкладка возврата инструмента"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Возврат инструмента")
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="📥 Возврат инструмента")
         
         control_frame = self._create_control_frame(tab)
         
@@ -276,17 +510,23 @@ class ToolManagementApp:
         
     def create_history_tab(self):
         """Вкладка истории операций"""
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="История операций")
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="📋 История операций")
         
         control_frame = self._create_control_frame(tab)
         
         self._create_button(control_frame, "Обновить", self.load_history)
         
         # Фильтр
-        filter_frame = ttk.Frame(control_frame)
+        filter_frame = tk.Frame(control_frame, bg=self.office_colors['bg_white'])
         filter_frame.pack(side=tk.LEFT, padx=20)
-        ttk.Label(filter_frame, text="Тип операции:").pack(side=tk.LEFT)
+        tk.Label(
+            filter_frame,
+            text="Тип операции:",
+            bg=self.office_colors['bg_white'],
+            fg=self.office_colors['fg_main'],
+            font=self.default_font
+        ).pack(side=tk.LEFT, padx=(0, 5))
         self.history_filter = ttk.Combobox(
             filter_frame, values=['Все', 'Выдача', 'Возврат'],
             state='readonly', width=15
@@ -297,6 +537,288 @@ class ToolManagementApp:
         
         self.history_tree = self._create_treeview(tab, 'history')
         self.tree_mapping['history'] = self.history_tree
+    
+    def create_addresses_tab(self):
+        """Вкладка управления адресами выдачи"""
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="📍 Адреса выдачи")
+        
+        control_frame = self._create_control_frame(tab)
+        
+        self._create_button(control_frame, "Добавить адрес", self.add_address)
+        self._create_button(control_frame, "Редактировать", self.edit_address)
+        self._create_button(control_frame, "Удалить", self.delete_address)
+        self._create_button(control_frame, "Обновить", self.load_addresses)
+        
+        self.address_search = self._create_search_widget(control_frame, self.load_addresses)
+        self.addresses_tree = self._create_treeview(tab, 'addresses')
+        self.tree_mapping['addresses'] = self.addresses_tree
+    
+    def create_statistics_tab(self):
+        """Вкладка статистики и отчетов"""
+        tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
+        self.notebook.add(tab, text="📊 Статистика")
+        
+        # Создаем скроллируемый фрейм
+        canvas = tk.Canvas(tab, bg=self.office_colors['bg_white'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=self.office_colors['bg_white'])
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Панель управления
+        control_frame = self._create_control_frame(scrollable_frame)
+        self._create_button(control_frame, "Обновить", self.load_statistics)
+        
+        # Общая статистика
+        self._create_statistics_section(scrollable_frame, "Общая статистика", self._create_general_stats)
+        
+        # Статистика по категориям
+        self._create_statistics_section(scrollable_frame, "Инструменты по категориям", self._create_category_stats)
+        
+        # Топ сотрудников
+        self._create_statistics_section(scrollable_frame, "Топ сотрудников по выдачам", self._create_employees_stats)
+        
+        # Самые используемые инструменты
+        self._create_statistics_section(scrollable_frame, "Самые используемые инструменты", self._create_instruments_usage_stats)
+        
+        # Среднее время использования
+        self._create_statistics_section(scrollable_frame, "Среднее время использования", self._create_usage_time_stats)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Привязка прокрутки колесом мыши
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        
+        # Обновление области прокрутки при изменении размера
+        def update_scroll_region(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        scrollable_frame.bind("<Configure>", update_scroll_region)
+        
+        # Настройка фона canvas
+        canvas.configure(bg=self.office_colors['bg_white'])
+        
+    def _create_statistics_section(self, parent, title, content_func):
+        """Создание секции статистики в стиле MS Office"""
+        section_frame = ttk.LabelFrame(parent, text=title, padding="10")
+        section_frame.pack(fill=tk.X, padx=10, pady=5)
+        content_func(section_frame)
+    
+    def _create_general_stats(self, parent):
+        """Создание общей статистики"""
+        stats = self.db.get_general_statistics()
+        
+        # Создаем фрейм для метрик
+        metrics_frame = tk.Frame(parent, bg=self.office_colors['bg_white'])
+        metrics_frame.pack(fill=tk.X, pady=5)
+        
+        # Метрики в две колонки
+        left_frame = tk.Frame(metrics_frame, bg=self.office_colors['bg_white'])
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        right_frame = tk.Frame(metrics_frame, bg=self.office_colors['bg_white'])
+        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+        
+        # Левая колонка
+        self._create_metric(left_frame, "Всего инструментов", stats['total_instruments'])
+        self._create_metric(left_frame, "Активных сотрудников", stats['active_employees'])
+        self._create_metric(left_frame, "Активных выдач", stats['active_issues'])
+        
+        # Правая колонка
+        self._create_metric(right_frame, "Просроченных выдач", stats['overdue_issues'], 
+                           color='red' if stats['overdue_issues'] > 0 else 'black')
+        self._create_metric(right_frame, "Всего операций", stats['total_operations'])
+        
+        # Статусы инструментов
+        if stats['instruments_by_status']:
+            status_frame = ttk.LabelFrame(parent, text="Инструменты по статусам", padding="5")
+            status_frame.pack(fill=tk.X, pady=5)
+            
+            status_inner = tk.Frame(status_frame, bg=self.office_colors['bg_white'])
+            status_inner.pack(fill=tk.X)
+            
+            for status, count in stats['instruments_by_status'].items():
+                self._create_metric(status_inner, status, count)
+    
+    def _create_category_stats(self, parent):
+        """Статистика по категориям"""
+        data = self.db.get_instruments_by_category()
+        
+        if not data:
+            no_data_label = tk.Label(
+                parent,
+                text="Нет данных",
+                bg=self.office_colors['bg_white'],
+                fg=self.office_colors['fg_secondary'],
+                font=self.default_font
+            )
+            no_data_label.pack(pady=5)
+            return
+        
+        # Таблица
+        columns = ('Категория', 'Всего', 'Доступно', 'Выдано', 'На ремонте', 'Списано')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=min(len(data), 10))
+        
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=120)
+        
+        for row in data:
+            tree.insert('', tk.END, values=row)
+        
+        tree.pack(fill=tk.BOTH, expand=True, pady=5)
+    
+    def _create_employees_stats(self, parent):
+        """Статистика по сотрудникам"""
+        data = self.db.get_top_employees_by_issues(10)
+        
+        if not data:
+            no_data_label = tk.Label(
+                parent,
+                text="Нет данных",
+                bg=self.office_colors['bg_white'],
+                fg=self.office_colors['fg_secondary'],
+                font=self.default_font
+            )
+            no_data_label.pack(pady=5)
+            return
+        
+        columns = ('Сотрудник', 'Отдел', 'Всего выдач', 'Активных', 'Просрочено')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=min(len(data), 10))
+        
+        tree.column('Сотрудник', width=200)
+        tree.column('Отдел', width=150)
+        tree.column('Всего выдач', width=100)
+        tree.column('Активных', width=100)
+        tree.column('Просрочено', width=100)
+        
+        for col in columns:
+            tree.heading(col, text=col)
+        
+        for row in data:
+            tags = ('overdue',) if row[4] > 0 else ()
+            tree.insert('', tk.END, values=row, tags=tags)
+        
+        tree.tag_configure('overdue', background='#ffcccc')
+        tree.pack(fill=tk.BOTH, expand=True, pady=5)
+    
+    def _create_instruments_usage_stats(self, parent):
+        """Статистика использования инструментов"""
+        data = self.db.get_most_used_instruments(10)
+        
+        if not data:
+            no_data_label = tk.Label(
+                parent,
+                text="Нет данных",
+                bg=self.office_colors['bg_white'],
+                fg=self.office_colors['fg_secondary'],
+                font=self.default_font
+            )
+            no_data_label.pack(pady=5)
+            return
+        
+        columns = ('Инструмент', 'Инв. номер', 'Категория', 'Всего операций', 'Выдач', 'Возвратов')
+        tree = ttk.Treeview(parent, columns=columns, show='headings', height=min(len(data), 10))
+        
+        tree.column('Инструмент', width=200)
+        tree.column('Инв. номер', width=120)
+        tree.column('Категория', width=150)
+        tree.column('Всего операций', width=120)
+        tree.column('Выдач', width=100)
+        tree.column('Возвратов', width=100)
+        
+        for col in columns:
+            tree.heading(col, text=col)
+        
+        for row in data:
+            tree.insert('', tk.END, values=row)
+        
+        tree.pack(fill=tk.BOTH, expand=True, pady=5)
+    
+    def _create_usage_time_stats(self, parent):
+        """Статистика времени использования"""
+        data = self.db.get_average_usage_time()
+        
+        if not data:
+            no_data_label = tk.Label(
+                parent,
+                text="Недостаточно данных для расчета",
+                bg=self.office_colors['bg_white'],
+                fg=self.office_colors['fg_secondary'],
+                font=self.default_font
+            )
+            no_data_label.pack(pady=5)
+            return
+        
+        metrics_frame = tk.Frame(parent, bg=self.office_colors['bg_white'])
+        metrics_frame.pack(fill=tk.X, pady=5)
+        
+        self._create_metric(metrics_frame, "Среднее время (дней)", data['avg_days'])
+        self._create_metric(metrics_frame, "Минимальное время (дней)", data['min_days'])
+        self._create_metric(metrics_frame, "Максимальное время (дней)", data['max_days'])
+        self._create_metric(metrics_frame, "Всего возвратов", data['total_returns'])
+    
+    def _create_metric(self, parent, label, value, color='black'):
+        """Создание метрики в стиле MS Office"""
+        frame = tk.Frame(parent, bg=self.office_colors['bg_white'])
+        frame.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        # Используем цвет из office_colors если это стандартный цвет
+        if color == 'black':
+            text_color = self.office_colors['fg_main']
+        elif color == 'red':
+            text_color = '#d13438'  # Красный в стиле Office
+        else:
+            text_color = color
+        
+        label_widget = tk.Label(
+            frame,
+            text=label,
+            font=(self.default_font[0], 9),
+            bg=self.office_colors['bg_white'],
+            fg=self.office_colors['fg_secondary']
+        )
+        label_widget.pack()
+        
+        value_widget = tk.Label(
+            frame,
+            text=str(value),
+            font=(self.default_font[0], 14, "bold"),
+            fg=text_color,
+            bg=self.office_colors['bg_white']
+        )
+        value_widget.pack()
+    
+    def load_statistics(self):
+        """Обновление статистики"""
+        # Находим индекс вкладки статистики
+        stats_tab_index = None
+        for i in range(self.notebook.index("end")):
+            tab_text = self.notebook.tab(i, "text")
+            if "Статистика" in tab_text:
+                stats_tab_index = i
+                break
+        
+        if stats_tab_index is not None:
+            # Удаляем старую вкладку
+            self.notebook.forget(stats_tab_index)
+            # Создаем новую
+            self.create_statistics_tab()
+            # Выбираем её
+            for i in range(self.notebook.index("end")):
+                tab_text = self.notebook.tab(i, "text")
+                if "Статистика" in tab_text:
+                    self.notebook.select(i)
+                    break
         
     def sort_treeview(self, table_name, column, toggle_direction=True):
         """Сортировка таблицы по столбцу
@@ -391,6 +913,7 @@ class ToolManagementApp:
         self.load_active_issues()
         self.load_active_issues_for_return()
         self.load_history()
+        self.load_addresses()
     
     def _load_treeview_data(self, table_name, tree, data_func, search_widget=None, 
                             item_processor=None, post_load_callback=None):
@@ -474,7 +997,7 @@ class ToolManagementApp:
     def load_active_issues_for_return(self):
         """Загрузка активных выдач для возврата"""
         def process_item(issue):
-            expected_return = datetime.strptime(issue[5], '%Y-%m-%d').date() if issue[5] else None
+            expected_return = datetime.strptime(issue[6], '%Y-%m-%d').date() if issue[6] else None
             tags = ('overdue',) if expected_return and expected_return < datetime.now().date() else ()
             return issue, tags
         
@@ -583,6 +1106,83 @@ class ToolManagementApp:
         )
         if issue_id:
             ReturnInstrumentDialog(self.root, self.db, issue_id, self.load_data)
+    
+    def load_addresses(self):
+        """Загрузка списка адресов"""
+        self._load_treeview_data(
+            'addresses',
+            self.addresses_tree,
+            lambda search: self.db.get_addresses() if not search else [
+                addr for addr in self.db.get_addresses()
+                if search.lower() in (addr[1] or '').lower() or search.lower() in (addr[2] or '').lower()
+            ],
+            getattr(self, 'address_search', None)
+        )
+    
+    def add_address(self):
+        """Добавление нового адреса"""
+        AddAddressDialog(self.root, self.db, self.load_addresses)
+    
+    def edit_address(self):
+        """Редактирование адреса"""
+        address_id = self._get_selected_item_id(
+            self.addresses_tree, "Выберите адрес для редактирования"
+        )
+        if address_id:
+            EditAddressDialog(self.root, self.db, address_id, self.load_addresses)
+    
+    def delete_address(self):
+        """Удаление адреса"""
+        address_id = self._get_selected_item_id(
+            self.addresses_tree, "Выберите адрес для удаления"
+        )
+        if address_id and messagebox.askyesno("Подтверждение", "Вы уверены, что хотите удалить адрес?"):
+            success, message = self.db.delete_address(address_id)
+            if success:
+                messagebox.showinfo("Успех", message)
+                self.load_addresses()
+            else:
+                messagebox.showerror("Ошибка", message)
+    
+    def export_issues_to_pdf(self):
+        """Экспорт журнала выдачи инструмента в PDF"""
+        # Диалог выбора файла
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+            title="Сохранить журнал выдачи в PDF",
+            initialfile=f"Журнал_выдачи_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+        
+        if not filename:
+            return  # Пользователь отменил
+        
+        try:
+            # Создаем экспортер
+            exporter = PDFExporter()
+            
+            # Получаем данные о выдачах
+            issues = self.db.get_active_issues()
+            
+            if not issues:
+                messagebox.showwarning(
+                    "Предупреждение", 
+                    "Нет данных для экспорта. Нет активных выдач."
+                )
+                return
+            
+            # Экспортируем в PDF
+            exporter.export_issues_journal(issues, filename)
+            
+            messagebox.showinfo(
+                "Успех", 
+                f"Журнал выдачи успешно экспортирован в PDF.\n\nФайл: {filename}"
+            )
+        except Exception as e:
+            messagebox.showerror(
+                "Ошибка", 
+                f"Ошибка при экспорте в PDF:\n{str(e)}"
+            )
     
     def _save_window_geometry(self):
         """Сохранение геометрии окна (вызывается с задержкой)"""
