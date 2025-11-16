@@ -37,7 +37,7 @@ git commit -m "Initial commit: Система учета выдачи и воз�
 GitHub покажет инструкции. Выполните команды (замените `YOUR_USERNAME` на ваш GitHub username):
 
 ```bash
-git remote add origin https://github.com/YOUR_USERNAME/tool-management-system.git
+git remote add origin https://github.com//inpredservice11-beep/Instruments/tool-management-system.git
 git branch -M main
 git push -u origin main
 ```

@@ -4,6 +4,7 @@
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from tkinter import dnd
 from datetime import datetime, timedelta
 from tkcalendar import DateEntry, Calendar
 from window_config import WindowConfig
@@ -19,6 +20,16 @@ window_config = WindowConfig()
 
 # Глобальный реестр открытых диалогов: {window_name: dialog}
 _open_dialogs = {}
+
+def save_current_window_geometry(dialog, window_name):
+    """Сохранение текущей геометрии окна"""
+    try:
+        if dialog.winfo_exists():
+            geometry = dialog.geometry()
+            if geometry and geometry != "1x1+0+0":
+                window_config.save_window_geometry(window_name, geometry)
+    except:
+        pass
 
 def register_dialog(dialog, window_name):
     """Регистрация открытого диалога для отслеживания"""
@@ -204,7 +215,7 @@ class AddAddressDialog:
         ttk.Button(
             button_frame,
             text="Сохранить",
-            command=self.save
+            command=lambda: [self.save(), close_dialog_with_save(self.dialog, "AddAddressDialog")]
         ).pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
@@ -232,7 +243,6 @@ class AddAddressDialog:
         messagebox.showinfo("Успех", "Адрес добавлен")
         if self.callback:
             self.callback()
-        close_dialog_with_save(self.dialog, "AddAddressDialog")
 
 
 class EditAddressDialog:
@@ -298,6 +308,9 @@ class EditAddressDialog:
         self.name_entry.focus_set()
     
     def save(self):
+        # Сохраняем текущую геометрию окна
+        save_current_window_geometry(self.dialog, "EditAddressDialog")
+
         name = self.name_entry.get().strip()
         full_address = self.full_address_text.get("1.0", tk.END).strip()
 
@@ -415,11 +428,15 @@ class AddInstrumentDialog:
             text="Удалить фото",
             command=self.remove_photo
         ).pack(side=tk.TOP, pady=5)
-        
+
         # Превью фотографии
-        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено", width=30, height=10, bg='lightgray')
+        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено\n(перетащите файл сюда)", bg='lightgray', relief='sunken', bd=2)
         self.photo_preview_label.pack(side=tk.LEFT, padx=10)
-        
+
+        # Визуальная подсказка при наведении
+        self.photo_preview_label.bind('<Enter>', lambda e: self.photo_preview_label.configure(bg='#e8f4fd'))
+        self.photo_preview_label.bind('<Leave>', lambda e: self.photo_preview_label.configure(bg='lightgray'))
+
         # Кнопки
         button_frame = ttk.Frame(main_frame)
         button_frame.grid(row=len(fields)+2, column=0, columnspan=2, pady=20)
@@ -427,9 +444,9 @@ class AddInstrumentDialog:
         ttk.Button(
             button_frame,
             text="Сохранить",
-            command=self.save
+            command=lambda: [self.save(), close_dialog_with_save(self.dialog, "AddInstrumentDialog")]
         ).pack(side=tk.LEFT, padx=5)
-        
+
         ttk.Button(
             button_frame,
             text="Отмена",
@@ -437,6 +454,9 @@ class AddInstrumentDialog:
         ).pack(side=tk.LEFT, padx=5)
         
     def save(self):
+        # Сохраняем текущую геометрию окна
+        save_current_window_geometry(self.dialog, "AddInstrumentDialog")
+
         # Получение значений
         name = self.entries['name'].get().strip()
         description = self.entries['description'].get("1.0", tk.END).strip()
@@ -546,7 +566,7 @@ class AddInstrumentDialog:
                 pass
         
         self.photo_path = None
-        self.photo_preview_label.config(image='', text="Фото не загружено")
+        self.photo_preview_label.config(image='', text="Фото не загружено\n(перетащите файл сюда)", width=0, height=0)
         self.photo_preview_label.image = None
     
     def display_photo_preview(self, photo_path):
@@ -554,13 +574,45 @@ class AddInstrumentDialog:
         try:
             # Загружаем и изменяем размер изображения
             img = Image.open(photo_path)
-            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
-            
-            self.photo_preview_label.config(image=photo, text='')
+
+            self.photo_preview_label.config(image=photo, text='', width=250, height=200)
             self.photo_preview_label.image = photo  # Сохраняем ссылку
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось отобразить фотографию: {e}")
+
+    def _on_photo_drop(self, event):
+        """Обработка перетаскивания файла на превью фото"""
+        # Получаем путь к файлу из события drag & drop
+        file_path = event.data.strip('{}')  # Убираем фигурные скобки если они есть
+
+        # Проверяем расширение файла
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+            try:
+                # Загружаем фото так же как в методе load_photo
+                dest_dir = "photos/instruments"
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # Генерируем уникальное имя файла
+                file_ext = os.path.splitext(file_path)[1]
+                unique_name = f"{uuid.uuid4()}{file_ext}"
+                dest_path = os.path.join(dest_dir, unique_name)
+
+                # Копируем файл
+                shutil.copy2(file_path, dest_path)
+                self.photo_path = dest_path
+
+                # Отображаем превью
+                self.display_photo_preview(dest_path)
+
+                # Возвращаем нормальный цвет фона
+                self.photo_preview_label.configure(bg='lightgray')
+
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось загрузить фотографию: {e}")
+        else:
+            messagebox.showwarning("Неподдерживаемый формат", "Пожалуйста, выберите файл изображения (JPG, PNG, GIF, BMP)")
 
 
 class EditInstrumentDialog:
@@ -707,11 +759,15 @@ class EditInstrumentDialog:
             text="Удалить фото",
             command=self.remove_photo
         ).pack(side=tk.TOP, pady=5)
-        
+
         # Превью фотографии
-        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено", width=30, height=10, bg='lightgray')
+        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено\n(перетащите файл сюда)", bg='lightgray', relief='sunken', bd=2)
         self.photo_preview_label.pack(side=tk.LEFT, padx=10)
-        
+
+        # Визуальная подсказка при наведении
+        self.photo_preview_label.bind('<Enter>', lambda e: self.photo_preview_label.configure(bg='#e8f4fd'))
+        self.photo_preview_label.bind('<Leave>', lambda e: self.photo_preview_label.configure(bg='lightgray'))
+
         # Загружаем существующую фотографию, если есть
         if self.photo_path:
             if os.path.exists(self.photo_path):
@@ -757,6 +813,9 @@ class EditInstrumentDialog:
         ).pack(side=tk.LEFT, padx=5)
         
     def save(self):
+        # Сохраняем текущую геометрию окна
+        save_current_window_geometry(self.dialog, "EditInstrumentDialog")
+
         name = self.entries['name'].get().strip()
         description = self.entries['description'].get("1.0", tk.END).strip()
         inventory_number = self.entries['inventory_number'].get().strip()
@@ -883,7 +942,7 @@ class EditInstrumentDialog:
         # Устанавливаем photo_path в None - это означает, что фото нужно удалить
         self.photo_path = None
         if self.photo_preview_label:
-            self.photo_preview_label.config(image='', text="Фото не загружено")
+            self.photo_preview_label.config(image='', text="Фото не загружено\n(перетащите файл сюда)", width=0, height=0)
             self.photo_preview_label.image = None
     
     def display_photo_preview(self, photo_path):
@@ -891,14 +950,46 @@ class EditInstrumentDialog:
         try:
             # Загружаем и изменяем размер изображения
             img = Image.open(photo_path)
-            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
-            
+
             if self.photo_preview_label:
                 self.photo_preview_label.config(image=photo, text='')
                 self.photo_preview_label.image = photo  # Сохраняем ссылку
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось отобразить фотографию: {e}")
+
+    def _on_photo_drop(self, event):
+        """Обработка перетаскивания файла на превью фото"""
+        # Получаем путь к файлу из события drag & drop
+        file_path = event.data.strip('{}')  # Убираем фигурные скобки если они есть
+
+        # Проверяем расширение файла
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+            try:
+                # Загружаем фото так же как в методе load_photo
+                dest_dir = "photos/instruments"
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # Генерируем уникальное имя файла
+                file_ext = os.path.splitext(file_path)[1]
+                unique_name = f"{uuid.uuid4()}{file_ext}"
+                dest_path = os.path.join(dest_dir, unique_name)
+
+                # Копируем файл
+                shutil.copy2(file_path, dest_path)
+                self.photo_path = dest_path
+
+                # Отображаем превью
+                self.display_photo_preview(dest_path)
+
+                # Возвращаем нормальный цвет фона
+                self.photo_preview_label.configure(bg='lightgray')
+
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось загрузить фотографию: {e}")
+        else:
+            messagebox.showwarning("Неподдерживаемый формат", "Пожалуйста, выберите файл изображения (JPG, PNG, GIF, BMP)")
 
 
 # ========== СОТРУДНИКИ ==========
@@ -1001,11 +1092,15 @@ class AddEmployeeDialog:
             text="Удалить фото",
             command=self.remove_photo
         ).pack(side=tk.TOP, pady=5)
-        
+
         # Превью фотографии
-        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено", width=30, height=10, bg='lightgray')
+        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено\n(перетащите файл сюда)", bg='lightgray', relief='sunken', bd=2)
         self.photo_preview_label.pack(side=tk.LEFT, padx=10)
-        
+
+        # Визуальная подсказка при наведении
+        self.photo_preview_label.bind('<Enter>', lambda e: self.photo_preview_label.configure(bg='#e8f4fd'))
+        self.photo_preview_label.bind('<Leave>', lambda e: self.photo_preview_label.configure(bg='lightgray'))
+
         # Размещаем canvas и scrollbar в content_frame
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -1034,14 +1129,17 @@ class AddEmployeeDialog:
             text="Сохранить",
             command=self.save
         ).pack(side=tk.LEFT, padx=5)
-        
+
         ttk.Button(
             button_frame,
             text="Отмена",
             command=lambda: close_dialog_with_save(self.dialog, "AddEmployeeDialog")
         ).pack(side=tk.LEFT, padx=5)
-        
+
     def save(self):
+        # Сохраняем текущую геометрию окна
+        save_current_window_geometry(self.dialog, "AddEmployeeDialog")
+
         full_name = self.entries['full_name'].get().strip()
         position = self.entries['position'].get().strip()
         department = self.entries['department'].get().strip()
@@ -1094,19 +1192,51 @@ class AddEmployeeDialog:
             except:
                 pass
         self.photo_path = None
-        self.photo_preview_label.config(image='', text="Фото не загружено")
+        self.photo_preview_label.config(image='', text="Фото не загружено\n(перетащите файл сюда)", width=0, height=0)
         self.photo_preview_label.image = None
     
     def display_photo_preview(self, photo_path):
         """Отображение превью фотографии"""
         try:
             img = Image.open(photo_path)
-            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             self.photo_preview_label.config(image=photo, text='')
             self.photo_preview_label.image = photo
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось отобразить фотографию: {e}")
+
+    def _on_photo_drop(self, event):
+        """Обработка перетаскивания файла на превью фото"""
+        # Получаем путь к файлу из события drag & drop
+        file_path = event.data.strip('{}')  # Убираем фигурные скобки если они есть
+
+        # Проверяем расширение файла
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+            try:
+                # Загружаем фото так же как в методе load_photo
+                dest_dir = "photos/employees"
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # Генерируем уникальное имя файла
+                file_ext = os.path.splitext(file_path)[1]
+                unique_name = f"{uuid.uuid4()}{file_ext}"
+                dest_path = os.path.join(dest_dir, unique_name)
+
+                # Копируем файл
+                shutil.copy2(file_path, dest_path)
+                self.photo_path = dest_path
+
+                # Отображаем превью
+                self.display_photo_preview(dest_path)
+
+                # Возвращаем нормальный цвет фона
+                self.photo_preview_label.configure(bg='lightgray')
+
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось загрузить фотографию: {e}")
+        else:
+            messagebox.showwarning("Неподдерживаемый формат", "Пожалуйста, выберите файл изображения (JPG, PNG, GIF, BMP)")
 
 
 class EditEmployeeDialog:
@@ -1222,11 +1352,15 @@ class EditEmployeeDialog:
             text="Удалить фото",
             command=self.remove_photo
         ).pack(side=tk.TOP, pady=5)
-        
+
         # Превью фотографии
-        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено", width=30, height=10, bg='lightgray')
+        self.photo_preview_label = tk.Label(photo_frame, text="Фото не загружено\n(перетащите файл сюда)", bg='lightgray', relief='sunken', bd=2)
         self.photo_preview_label.pack(side=tk.LEFT, padx=10)
-        
+
+        # Визуальная подсказка при наведении
+        self.photo_preview_label.bind('<Enter>', lambda e: self.photo_preview_label.configure(bg='#e8f4fd'))
+        self.photo_preview_label.bind('<Leave>', lambda e: self.photo_preview_label.configure(bg='lightgray'))
+
         # Загружаем существующую фотографию, если есть
         if self.photo_path and os.path.exists(self.photo_path):
             self.display_photo_preview(self.photo_path)
@@ -1265,8 +1399,11 @@ class EditEmployeeDialog:
             text="Отмена",
             command=lambda: close_dialog_with_save(self.dialog, "EditEmployeeDialog")
         ).pack(side=tk.LEFT, padx=5)
-        
+
     def save(self):
+        # Сохраняем текущую геометрию окна
+        save_current_window_geometry(self.dialog, "EditEmployeeDialog")
+
         full_name = self.entries['full_name'].get().strip()
         position = self.entries['position'].get().strip()
         department = self.entries['department'].get().strip()
@@ -1343,21 +1480,53 @@ class EditEmployeeDialog:
         # Устанавливаем photo_path в None - это означает, что фото нужно удалить
         self.photo_path = None
         if self.photo_preview_label:
-            self.photo_preview_label.config(image='', text="Фото не загружено")
+            self.photo_preview_label.config(image='', text="Фото не загружено\n(перетащите файл сюда)", width=0, height=0)
             self.photo_preview_label.image = None
     
     def display_photo_preview(self, photo_path):
         """Отображение превью фотографии"""
         try:
             img = Image.open(photo_path)
-            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            img.thumbnail((300, 300), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(img)
-            
+
             if self.photo_preview_label:
                 self.photo_preview_label.config(image=photo, text='')
                 self.photo_preview_label.image = photo  # Сохраняем ссылку
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось отобразить фотографию: {e}")
+
+    def _on_photo_drop(self, event):
+        """Обработка перетаскивания файла на превью фото"""
+        # Получаем путь к файлу из события drag & drop
+        file_path = event.data.strip('{}')  # Убираем фигурные скобки если они есть
+
+        # Проверяем расширение файла
+        if file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+            try:
+                # Загружаем фото так же как в методе load_photo
+                dest_dir = "photos/employees"
+                os.makedirs(dest_dir, exist_ok=True)
+
+                # Генерируем уникальное имя файла
+                file_ext = os.path.splitext(file_path)[1]
+                unique_name = f"{uuid.uuid4()}{file_ext}"
+                dest_path = os.path.join(dest_dir, unique_name)
+
+                # Копируем файл
+                shutil.copy2(file_path, dest_path)
+                self.photo_path = dest_path
+
+                # Отображаем превью
+                self.display_photo_preview(dest_path)
+
+                # Возвращаем нормальный цвет фона
+                self.photo_preview_label.configure(bg='lightgray')
+
+            except Exception as e:
+                messagebox.showerror("Ошибка", f"Не удалось загрузить фотографию: {e}")
+        else:
+            messagebox.showwarning("Неподдерживаемый формат", "Пожалуйста, выберите файл изображения (JPG, PNG, GIF, BMP)")
 
 
 # ========== ВЫДАЧА И ВОЗВРАТ ==========

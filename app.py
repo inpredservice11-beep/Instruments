@@ -516,17 +516,24 @@ class ToolManagementApp:
         """Вкладка управления сотрудниками"""
         tab = tk.Frame(self.notebook, bg=self.office_colors['bg_white'])
         self.notebook.add(tab, text="👥 Сотрудники")
-        
+
         control_frame = self._create_control_frame(tab)
-        
+
         self._create_button(control_frame, "Добавить сотрудника", self.add_employee)
         self._create_button(control_frame, "Редактировать", self.edit_employee)
         self._create_button(control_frame, "Удалить", self.delete_employee)
         self._create_button(control_frame, "Обновить", self.load_employees)
-        
+
         self.employee_search = self._create_search_widget(control_frame, self.load_employees)
         self.employees_tree = self._create_treeview(tab, 'employees')
         self.tree_mapping['employees'] = self.employees_tree
+
+        # Словарь для хранения photo_path по ID сотрудника
+        self.employee_photos = {}
+
+        # Обработчик наведения мыши для показа фотографии
+        self.employees_tree.bind('<Motion>', self._on_employee_hover)
+        self.employees_tree.bind('<Leave>', self._on_employee_leave)
 
         # Обработчик двойного клика для редактирования сотрудника
         self.employees_tree.bind('<Double-1>', self._on_employee_double_click)
@@ -1206,11 +1213,32 @@ class ToolManagementApp:
 
     def load_employees(self):
         """Загрузка списка сотрудников"""
+        # Очищаем словарь фотографий
+        if not hasattr(self, 'employee_photos'):
+            self.employee_photos = {}
+        else:
+            self.employee_photos.clear()
+
+        def process_item(item_data):
+            # item_data: (id, full_name, position, department, phone, email, status, photo_path)
+            employee_id = item_data[0]
+            photo_path = item_data[7] if len(item_data) > 7 else ''
+
+            # Сохраняем photo_path в словаре
+            if photo_path:
+                self.employee_photos[employee_id] = photo_path
+
+            # Возвращаем видимые столбцы (без photo_path)
+            # id, full_name, position, department, phone, email, status
+            values = item_data[:7]
+            return values, ()
+
         self._load_treeview_data(
             'employees',
             self.employees_tree,
             lambda search: self.db.get_employees(search),
-            getattr(self, 'employee_search', None)
+            getattr(self, 'employee_search', None),
+            item_processor=process_item
         )
             
     def load_active_issues(self):
@@ -1938,7 +1966,44 @@ class ToolManagementApp:
         
         # Если нет фотографии, скрываем tooltip
         self._hide_photo_tooltip()
-    
+
+    def _on_employee_hover(self, event):
+        """Обработчик наведения мыши на сотрудника"""
+        # Отменяем предыдущую отложенную задачу, если есть
+        if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+            self.root.after_cancel(self.photo_tooltip_job)
+            self.photo_tooltip_job = None
+
+        # Определяем, на какой строке находится курсор
+        item = self.employees_tree.identify_row(event.y)
+        if item:
+            # Получаем данные строки
+            values = self.employees_tree.item(item, 'values')
+            if values:
+                try:
+                    employee_id = int(values[0])  # ID - первый столбец
+
+                    # Проверяем, есть ли фотография для этого сотрудника
+                    if hasattr(self, 'employee_photos') and employee_id in self.employee_photos:
+                        photo_path = self.employee_photos[employee_id]
+                        if photo_path and os.path.exists(photo_path):
+                            # Откладываем показ tooltip на 300мс
+                            self.photo_tooltip_job = self.root.after(300, lambda p=photo_path: self._show_photo_tooltip(p))
+                            return
+                except (ValueError, IndexError):
+                    pass
+
+        # Если нет фотографии, скрываем tooltip
+        self._hide_photo_tooltip()
+
+    def _on_employee_leave(self, event):
+        """Обработчик ухода мыши с таблицы сотрудников"""
+        # Отменяем отложенную задачу показа tooltip
+        if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+            self.root.after_cancel(self.photo_tooltip_job)
+            self.photo_tooltip_job = None
+        self._hide_photo_tooltip()
+
     def _on_instrument_leave(self, event):
         """Обработчик ухода мыши с таблицы инструментов"""
         # Отменяем отложенную задачу показа tooltip

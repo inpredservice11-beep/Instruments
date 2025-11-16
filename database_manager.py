@@ -19,15 +19,28 @@ class DatabaseManager:
         cursor = conn.cursor()
 
         # Выполнение SQL скрипта создания таблиц (всегда, для гарантии)
-        with open('database/01_create_tables.sql', 'r', encoding='utf-8') as f:
-            sql_script = f.read()
-            cursor.executescript(sql_script)
+        try:
+            with open('database/01_create_tables.sql', 'r', encoding='utf-8') as f:
+                sql_script = f.read()
+                cursor.executescript(sql_script)
+            print("✅ Таблицы базы данных созданы")
+        except FileNotFoundError:
+            print("❌ Ошибка: файл database/01_create_tables.sql не найден")
+            raise
+        except Exception as e:
+            print(f"❌ Ошибка создания таблиц: {e}")
+            raise
 
         conn.commit()
         conn.close()
 
         # Выполняем миграцию (добавление колонок)
-        self.migrate_database()
+        try:
+            self.migrate_database()
+            print("✅ Миграция базы данных выполнена")
+        except Exception as e:
+            print(f"❌ Ошибка миграции: {e}")
+            raise
 
         # Вставка тестовых данных только если таблицы пустые
         if self._is_database_empty():
@@ -63,6 +76,16 @@ class DatabaseManager:
         """Обновление схемы базы данных до актуальной версии"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+
+        # Проверяем существование основных таблиц
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('instruments', 'employees', 'addresses', 'issues')")
+        existing_tables = [row[0] for row in cursor.fetchall()]
+
+        required_tables = ['instruments', 'employees', 'addresses', 'issues']
+        missing_tables = [table for table in required_tables if table not in existing_tables]
+
+        if missing_tables:
+            raise sqlite3.OperationalError(f"Отсутствуют таблицы: {', '.join(missing_tables)}. Возможно, файл database/01_create_tables.sql не найден или поврежден.")
 
         # Таблица адресов
         cursor.execute("""
@@ -301,9 +324,9 @@ class DatabaseManager:
             # Преобразуем поисковый текст в нижний регистр в Python для корректной работы с кириллицей
             search_text_lower = search_text.lower()
             query = """
-                SELECT id, full_name, position, department, phone, email, status
+                SELECT id, full_name, position, department, phone, email, status, COALESCE(photo_path, '') as photo_path
                 FROM employees
-                WHERE LOWER_PY(full_name) LIKE ? OR LOWER_PY(position) LIKE ? 
+                WHERE LOWER_PY(full_name) LIKE ? OR LOWER_PY(position) LIKE ?
                       OR LOWER_PY(department) LIKE ?
                 ORDER BY full_name
             """
@@ -311,7 +334,7 @@ class DatabaseManager:
             cursor.execute(query, (search_pattern, search_pattern, search_pattern))
         else:
             query = """
-                SELECT id, full_name, position, department, phone, email, status
+                SELECT id, full_name, position, department, phone, email, status, COALESCE(photo_path, '') as photo_path
                 FROM employees
                 ORDER BY full_name
             """

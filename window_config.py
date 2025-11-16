@@ -89,8 +89,11 @@ class WindowConfig:
                             self.save_window_geometry(window_name, geometry)
                 except:
                     pass
-            
+
+            # Для модальных окон события Configure могут не работать, попробуем другие события
             window.bind('<Configure>', on_configure)
+            window.bind('<ButtonRelease-1>', on_configure)  # При отпускании кнопки мыши
+            window.bind('<FocusOut>', on_configure)          # При потере фокуса
         
         # Всегда сохраняем при закрытии окна (гарантированное сохранение)
         def on_closing():
