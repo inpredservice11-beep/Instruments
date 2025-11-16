@@ -304,4 +304,251 @@ class PDFExporter:
         
         title = "Журнал выдачи инструмента" + (" (все записи)" if include_returned else " (активные)")
         self.export_issues_journal(issues, output_path, title)
+    
+    def export_returns_journal(self, returns_data, output_path, title="Журнал возврата инструмента"):
+        """Экспорт журнала возврата инструмента в PDF
+        
+        Args:
+            returns_data: список кортежей с данными о возвратах
+            output_path: путь для сохранения PDF файла
+            title: заголовок документа
+        """
+        # Используем альбомную ориентацию для лучшего размещения таблицы
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=landscape(A4),
+            rightMargin=15*mm,
+            leftMargin=15*mm,
+            topMargin=15*mm,
+            bottomMargin=15*mm
+        )
+        
+        story = []
+        
+        # Заголовок
+        story.append(Paragraph(title, self.title_style))
+        story.append(Paragraph(
+            f"Дата формирования: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            self.subtitle_style
+        ))
+        story.append(Spacer(1, 12*mm))
+        
+        # Подготовка данных для таблицы
+        if not returns_data:
+            story.append(Paragraph("Нет данных для отображения", self.normal_style))
+        else:
+            # Заголовки таблицы
+            headers = ['№', 'Инв. номер', 'Инструмент', 'Сотрудник', 
+                      'Адрес', 'Дата выдачи', 'Ожид. возврат', 'Дней в использовании']
+            
+            # Подготовка данных с использованием Paragraph для поддержки кириллицы
+            table_data = []
+            
+            # Заголовки
+            header_row = []
+            for header in headers:
+                header_row.append(Paragraph(header, self.table_header_style))
+            table_data.append(header_row)
+            
+            for idx, ret in enumerate(returns_data, 1):
+                # Форматирование даты
+                issue_date = self._format_date(ret[5]) if len(ret) > 5 else ''
+                expected_return = self._format_date(ret[6]) if len(ret) > 6 else ''
+                days_used = str(ret[7]) if len(ret) > 7 else ''
+                
+                # Используем Paragraph для всех ячеек для поддержки кириллицы
+                row = [
+                    Paragraph(str(idx), self.normal_style),
+                    Paragraph(str(ret[1]) if len(ret) > 1 else '', self.normal_style),  # Инв. номер
+                    Paragraph(str(ret[2]) if len(ret) > 2 else '', self.normal_style),  # Инструмент
+                    Paragraph(str(ret[3]) if len(ret) > 3 else '', self.normal_style),  # Сотрудник
+                    Paragraph(str(ret[4]) if len(ret) > 4 else '', self.normal_style),  # Адрес
+                    Paragraph(issue_date, self.normal_style),
+                    Paragraph(expected_return, self.normal_style),
+                    Paragraph(days_used, self.normal_style)
+                ]
+                table_data.append(row)
+            
+            # Создание таблицы
+            table = Table(table_data, repeatRows=1)
+            
+            # Вычисляем доступную ширину (альбомная ориентация A4 минус отступы)
+            available_width = landscape(A4)[0] - 30*mm  # минус левый и правый отступы
+            total_cols = 8
+            
+            # Стилизация таблицы
+            table.setStyle(TableStyle([
+                # Заголовок
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4472C4')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), getattr(self, 'font_bold', 'Helvetica-Bold')),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('TOPPADDING', (0, 0), (-1, 0), 6),
+                
+                # Чередование цветов строк
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F2F2')]),
+                
+                # Границы
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                
+                # Размеры столбцов (оптимизированы для альбомной ориентации)
+                ('COLWIDTH', (0, 0), (0, -1), 15*mm),  # №
+                ('COLWIDTH', (1, 0), (1, -1), 22*mm),  # Инв. номер
+                ('COLWIDTH', (2, 0), (2, -1), 40*mm),  # Инструмент
+                ('COLWIDTH', (3, 0), (3, -1), 30*mm),  # Сотрудник
+                ('COLWIDTH', (4, 0), (4, -1), 40*mm),  # Адрес
+                ('COLWIDTH', (5, 0), (5, -1), 25*mm),  # Дата выдачи
+                ('COLWIDTH', (6, 0), (6, -1), 25*mm),  # Ожид. возврат
+                ('COLWIDTH', (7, 0), (7, -1), 25*mm),  # Дней в использовании
+                
+                # Перенос текста
+                ('WORDWRAP', (0, 0), (-1, -1), True),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            
+            story.append(table)
+        
+        # Итоговая информация
+        story.append(Spacer(1, 10*mm))
+        story.append(Paragraph(
+            f"<b>Всего записей:</b> {len(returns_data)}",
+            self.normal_style
+        ))
+        
+        # Генерация PDF
+        doc.build(story)
+    
+    def export_history_journal(self, history_data, output_path, filter_type='Все', title=None):
+        """Экспорт журнала операций в PDF
+        
+        Args:
+            history_data: список кортежей с данными об операциях
+            output_path: путь для сохранения PDF файла
+            filter_type: тип фильтра ('Все', 'Выдача', 'Возврат')
+            title: заголовок документа (если не указан, формируется автоматически)
+        """
+        if title is None:
+            if filter_type == 'Все':
+                title = "Журнал операций"
+            elif filter_type == 'Выдача':
+                title = "Журнал операций - Выдача"
+            elif filter_type == 'Возврат':
+                title = "Журнал операций - Возврат"
+            else:
+                title = "Журнал операций"
+        
+        # Используем альбомную ориентацию для лучшего размещения таблицы
+        doc = SimpleDocTemplate(
+            output_path,
+            pagesize=landscape(A4),
+            rightMargin=15*mm,
+            leftMargin=15*mm,
+            topMargin=15*mm,
+            bottomMargin=15*mm
+        )
+        
+        story = []
+        
+        # Заголовок
+        story.append(Paragraph(title, self.title_style))
+        story.append(Paragraph(
+            f"Дата формирования: {datetime.now().strftime('%d.%m.%Y %H:%M')}",
+            self.subtitle_style
+        ))
+        story.append(Spacer(1, 12*mm))
+        
+        # Подготовка данных для таблицы
+        if not history_data:
+            story.append(Paragraph("Нет данных для отображения", self.normal_style))
+        else:
+            # Заголовки таблицы
+            headers = ['№', 'Тип', 'Инв. номер', 'Инструмент', 'Сотрудник', 
+                      'Адрес', 'Дата операции', 'Выполнил', 'Примечание']
+            
+            # Подготовка данных с использованием Paragraph для поддержки кириллицы
+            table_data = []
+            
+            # Заголовки
+            header_row = []
+            for header in headers:
+                header_row.append(Paragraph(header, self.table_header_style))
+            table_data.append(header_row)
+            
+            for idx, record in enumerate(history_data, 1):
+                # Форматирование даты
+                operation_date = self._format_date(record[6]) if len(record) > 6 else ''
+                
+                # Используем Paragraph для всех ячеек для поддержки кириллицы
+                row = [
+                    Paragraph(str(idx), self.normal_style),
+                    Paragraph(str(record[1]) if len(record) > 1 else '', self.normal_style),  # Тип
+                    Paragraph(str(record[2]) if len(record) > 2 else '', self.normal_style),  # Инв. номер
+                    Paragraph(str(record[3]) if len(record) > 3 else '', self.normal_style),  # Инструмент
+                    Paragraph(str(record[4]) if len(record) > 4 else '', self.normal_style),  # Сотрудник
+                    Paragraph(str(record[5]) if len(record) > 5 else '', self.normal_style),  # Адрес
+                    Paragraph(operation_date, self.normal_style),
+                    Paragraph(str(record[7]) if len(record) > 7 else '', self.normal_style),  # Выполнил
+                    Paragraph(str(record[8]) if len(record) > 8 else '', self.normal_style)  # Примечание
+                ]
+                table_data.append(row)
+            
+            # Создание таблицы
+            table = Table(table_data, repeatRows=1)
+            
+            # Вычисляем доступную ширину (альбомная ориентация A4 минус отступы)
+            available_width = landscape(A4)[0] - 30*mm  # минус левый и правый отступы
+            total_cols = 9
+            
+            # Стилизация таблицы
+            table.setStyle(TableStyle([
+                # Заголовок
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4472C4')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), getattr(self, 'font_bold', 'Helvetica-Bold')),
+                ('FONTSIZE', (0, 0), (-1, 0), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('TOPPADDING', (0, 0), (-1, 0), 6),
+                
+                # Чередование цветов строк
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F2F2F2')]),
+                
+                # Границы
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                
+                # Размеры столбцов (оптимизированы для альбомной ориентации)
+                ('COLWIDTH', (0, 0), (0, -1), 15*mm),  # №
+                ('COLWIDTH', (1, 0), (1, -1), 18*mm),  # Тип
+                ('COLWIDTH', (2, 0), (2, -1), 22*mm),  # Инв. номер
+                ('COLWIDTH', (3, 0), (3, -1), 35*mm),  # Инструмент
+                ('COLWIDTH', (4, 0), (4, -1), 30*mm),  # Сотрудник
+                ('COLWIDTH', (5, 0), (5, -1), 40*mm),  # Адрес
+                ('COLWIDTH', (6, 0), (6, -1), 25*mm),  # Дата операции
+                ('COLWIDTH', (7, 0), (7, -1), 22*mm),  # Выполнил
+                ('COLWIDTH', (8, 0), (8, -1), 35*mm),  # Примечание
+                
+                # Перенос текста
+                ('WORDWRAP', (0, 0), (-1, -1), True),
+                ('FONTSIZE', (0, 1), (-1, -1), 7),
+                ('LEFTPADDING', (0, 0), (-1, -1), 3),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+            ]))
+            
+            story.append(table)
+        
+        # Итоговая информация
+        story.append(Spacer(1, 10*mm))
+        story.append(Paragraph(
+            f"<b>Всего записей:</b> {len(history_data)}",
+            self.normal_style
+        ))
+        
+        # Генерация PDF
+        doc.build(story)
 

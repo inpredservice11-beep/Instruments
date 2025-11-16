@@ -82,11 +82,60 @@ class WindowConfig:
         # Привязываем сохранение позиции при перемещении окна (только если auto_save=True)
         if auto_save:
             def on_configure(event):
-                if window.winfo_viewable():
-                    geometry = window.geometry()
-                    self.save_window_geometry(window_name, geometry)
+                try:
+                    if window.winfo_exists() and window.winfo_viewable() and event.widget == window:
+                        geometry = window.geometry()
+                        if geometry and geometry != "1x1+0+0":  # Игнорируем некорректную геометрию
+                            self.save_window_geometry(window_name, geometry)
+                except:
+                    pass
             
             window.bind('<Configure>', on_configure)
+        
+        # Всегда сохраняем при закрытии окна (гарантированное сохранение)
+        def on_closing():
+            try:
+                if window.winfo_exists() and window.winfo_viewable():
+                    geometry = window.geometry()
+                    if geometry and geometry != "1x1+0+0":  # Игнорируем некорректную геометрию
+                        self.save_window_geometry(window_name, geometry)
+            except:
+                pass  # Окно уже закрывается
+            try:
+                if window.winfo_exists():
+                    window.destroy()
+            except:
+                pass
+        
+        # Сохраняем ссылку на обработчик для возможного использования
+        window._window_config_name = window_name
+        window._window_config = self
+        
+        window.protocol("WM_DELETE_WINDOW", on_closing)
+    
+    def close_window_with_save(self, window, window_name=None):
+        """Закрытие окна с сохранением настроек
+        
+        Args:
+            window: окно tkinter
+            window_name: имя окна (если не указано, берется из атрибута окна)
+        """
+        if window_name is None:
+            window_name = getattr(window, '_window_config_name', None)
+        
+        try:
+            if window_name and window.winfo_exists() and window.winfo_viewable():
+                geometry = window.geometry()
+                if geometry and geometry != "1x1+0+0":  # Игнорируем некорректную геометрию
+                    self.save_window_geometry(window_name, geometry)
+        except:
+            pass
+        
+        try:
+            if window.winfo_exists():
+                window.destroy()
+        except:
+            pass
 
 
 

@@ -10,26 +10,54 @@ import os
 class DatabaseManager:
     def __init__(self, db_path='tool_management.db'):
         self.db_path = db_path
+        self.conn = None  # Для отслеживания соединения
         self.init_database()
-        self.migrate_database()
         
     def init_database(self):
         """Инициализация базы данных"""
-        # Создание БД, если её нет
-        if not os.path.exists(self.db_path):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Выполнение SQL скрипта создания таблиц (всегда, для гарантии)
+        with open('database/01_create_tables.sql', 'r', encoding='utf-8') as f:
+            sql_script = f.read()
+            cursor.executescript(sql_script)
+
+        conn.commit()
+        conn.close()
+
+        # Выполняем миграцию (добавление колонок)
+        self.migrate_database()
+
+        # Вставка тестовых данных только если таблицы пустые
+        if self._is_database_empty():
+            self.insert_sample_data()
+
+    def _is_database_empty(self):
+        """Проверка, пустая ли база данных"""
+        try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Выполнение SQL скрипта создания таблиц
-            with open('database/01_create_tables.sql', 'r', encoding='utf-8') as f:
-                sql_script = f.read()
-                cursor.executescript(sql_script)
-            
-            conn.commit()
+
+            # Проверяем количество записей в основных таблицах
+            tables_to_check = ['instruments', 'employees', 'addresses']
+            for table in tables_to_check:
+                cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    conn.close()
+                    return False
+
             conn.close()
-            
-            # Вставка тестовых данных
-            self.insert_sample_data()
+            return True
+        except Exception:
+            return True  # Если ошибка, считаем что база пустая
+
+    def close(self):
+        """Закрытие соединения с базой данных"""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
 
     def migrate_database(self):
         """Обновление схемы базы данных до актуальной версии"""
@@ -51,6 +79,36 @@ class DatabaseManager:
         issue_columns = [row[1] for row in cursor.fetchall()]
         if 'address_id' not in issue_columns:
             cursor.execute("ALTER TABLE issues ADD COLUMN address_id INTEGER REFERENCES addresses(id)")
+
+        # Добавляем колонку photo_path в таблицу instruments, если её нет
+        cursor.execute("PRAGMA table_info(instruments)")
+        instrument_columns = [row[1] for row in cursor.fetchall()]
+        if 'photo_path' not in instrument_columns:
+            cursor.execute("ALTER TABLE instruments ADD COLUMN photo_path TEXT")
+
+        # Добавляем колонку barcode в таблицу instruments, если её нет
+        if 'barcode' not in instrument_columns:
+            cursor.execute("ALTER TABLE instruments ADD COLUMN barcode TEXT")
+            # Создаем индекс для уникальности barcode
+            try:
+                cursor.execute("CREATE UNIQUE INDEX idx_instruments_barcode ON instruments(barcode)")
+            except sqlite3.OperationalError:
+                # Индекс уже существует, пропускаем
+                pass
+
+        # Добавляем колонку photo_path в таблицу employees, если её нет
+        cursor.execute("PRAGMA table_info(employees)")
+        employee_columns = [row[1] for row in cursor.fetchall()]
+        if 'photo_path' not in employee_columns:
+            cursor.execute("ALTER TABLE employees ADD COLUMN photo_path TEXT")
+
+        # Создаем папку для фотографий, если её нет
+        photos_dir = 'photos'
+        if not os.path.exists(photos_dir):
+            os.makedirs(photos_dir)
+            # Создаем подпапки
+            os.makedirs(os.path.join(photos_dir, 'instruments'))
+            os.makedirs(os.path.join(photos_dir, 'employees'))
 
         conn.commit()
         conn.close()
@@ -94,8 +152,9 @@ class DatabaseManager:
                     ins.inventory_number,
                     ins.serial_number,
                     ins.category,
-                    COALESCE(NULLIF(addr.full_address, ''), addr.name, ins.location, '') as current_address,
-                    ins.status
+                    COALESCE(NULLIF(addr.full_address, ''), addr.name, '') as current_address,
+                    ins.status,
+                    COALESCE(ins.photo_path, '') as photo_path
                 FROM instruments ins
                 LEFT JOIN issues i ON i.instrument_id = ins.id AND i.status = 'Выдан'
                 LEFT JOIN addresses addr ON i.address_id = addr.id
@@ -103,7 +162,7 @@ class DatabaseManager:
                       OR LOWER_PY(ins.inventory_number) LIKE ? 
                       OR LOWER_PY(ins.serial_number) LIKE ? 
                       OR LOWER_PY(ins.category) LIKE ?
-                      OR LOWER_PY(COALESCE(addr.full_address, addr.name, ins.location, '')) LIKE ?
+                      OR LOWER_PY(COALESCE(NULLIF(addr.full_address, ''), addr.name, '')) LIKE ?
                 ORDER BY ins.name, ins.inventory_number
             """
             search_pattern = f'%{search_text_lower}%'
@@ -116,8 +175,9 @@ class DatabaseManager:
                     ins.inventory_number,
                     ins.serial_number,
                     ins.category,
-                    COALESCE(NULLIF(addr.full_address, ''), addr.name, ins.location, '') as current_address,
-                    ins.status
+                    COALESCE(NULLIF(addr.full_address, ''), addr.name, '') as current_address,
+                    ins.status,
+                    COALESCE(ins.photo_path, '') as photo_path
                 FROM instruments ins
                 LEFT JOIN issues i ON i.instrument_id = ins.id AND i.status = 'Выдан'
                 LEFT JOIN addresses addr ON i.address_id = addr.id
@@ -137,7 +197,8 @@ class DatabaseManager:
         
         cursor.execute("""
             SELECT id, name, description, inventory_number, serial_number, 
-                   category, location, purchase_date, price, status
+                   category, status, 
+                   COALESCE(photo_path, '') as photo_path
             FROM instruments
             WHERE id = ?
         """, (instrument_id,))
@@ -148,18 +209,25 @@ class DatabaseManager:
         return instrument
     
     def add_instrument(self, data):
-        """Добавление нового инструмента"""
+        """Добавление нового инструмента
+        data: кортеж (name, description, inventory_number, serial_number, category,
+              status, photo_path, barcode)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
+            # Если barcode не передан, добавляем None
+            if len(data) == 7:
+                data = data + (None,)
+
             cursor.execute("""
-                INSERT INTO instruments 
-                (name, description, inventory_number, serial_number, category, 
-                 location, purchase_date, price, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO instruments
+                (name, description, inventory_number, serial_number, category,
+                 status, photo_path, barcode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, data)
-            
+
             conn.commit()
             conn.close()
             return True
@@ -169,18 +237,26 @@ class DatabaseManager:
             return False
     
     def update_instrument(self, instrument_id, data):
-        """Обновление данных инструмента"""
+        """Обновление данных инструмента
+        data: кортеж (name, description, inventory_number, serial_number, category,
+              status, photo_path, barcode)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
+            # Если barcode не передан, добавляем None
+            if len(data) == 7:
+                data = data + (None,)
+
             cursor.execute("""
                 UPDATE instruments
-                SET name = ?, description = ?, inventory_number = ?, serial_number = ?, 
-                    category = ?, location = ?, purchase_date = ?, price = ?, status = ?
+                SET name = ?, description = ?, inventory_number = ?, serial_number = ?,
+                    category = ?, status = ?,
+                    photo_path = ?, barcode = ?
                 WHERE id = ?
             """, (*data, instrument_id))
-            
+
             conn.commit()
             conn.close()
             return True
@@ -252,7 +328,8 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT id, full_name, position, department, phone, email, status
+            SELECT id, full_name, position, department, phone, email, status, 
+                   COALESCE(photo_path, '') as photo_path
             FROM employees
             WHERE id = ?
         """, (employee_id,))
@@ -263,15 +340,21 @@ class DatabaseManager:
         return employee
     
     def add_employee(self, data):
-        """Добавление нового сотрудника"""
+        """Добавление нового сотрудника
+        data: кортеж (full_name, position, department, phone, email, status, photo_path)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
+            # Если photo_path не передан, добавляем None
+            if len(data) == 6:
+                data = data + (None,)
+            
             cursor.execute("""
                 INSERT INTO employees 
-                (full_name, position, department, phone, email, status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (full_name, position, department, phone, email, status, photo_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             """, data)
             
             conn.commit()
@@ -283,15 +366,21 @@ class DatabaseManager:
             return False
     
     def update_employee(self, employee_id, data):
-        """Обновление данных сотрудника"""
+        """Обновление данных сотрудника
+        data: кортеж (full_name, position, department, phone, email, status, photo_path)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
         
         try:
+            # Если photo_path не передан, добавляем None
+            if len(data) == 6:
+                data = data + (None,)
+            
             cursor.execute("""
                 UPDATE employees
                 SET full_name = ?, position = ?, department = ?, 
-                    phone = ?, email = ?, status = ?
+                    phone = ?, email = ?, status = ?, photo_path = ?
                 WHERE id = ?
             """, (*data, employee_id))
             
@@ -338,6 +427,7 @@ class DatabaseManager:
         cursor.execute("""
             SELECT 
                 i.id,
+                ins.id as instrument_id,
                 ins.inventory_number,
                 ins.name,
                 e.full_name,
@@ -345,7 +435,8 @@ class DatabaseManager:
                 datetime(i.issue_date, 'localtime'),
                 i.expected_return_date,
                 i.issued_by,
-                i.notes
+                i.notes,
+                ins.photo_path
             FROM issues i
             JOIN instruments ins ON i.instrument_id = ins.id
             JOIN employees e ON i.employee_id = e.id
@@ -367,13 +458,15 @@ class DatabaseManager:
         cursor.execute("""
             SELECT 
                 i.id,
+                ins.id as instrument_id,
                 ins.inventory_number,
                 ins.name,
                 e.full_name,
                 COALESCE(NULLIF(a.full_address, ''), a.name, ''),
                 date(i.issue_date),
                 i.expected_return_date,
-                CAST((julianday('now') - julianday(i.issue_date)) AS INTEGER) as days_in_use
+                CAST((julianday('now') - julianday(i.issue_date)) AS INTEGER) as days_in_use,
+                ins.photo_path
             FROM issues i
             JOIN instruments ins ON i.instrument_id = ins.id
             JOIN employees e ON i.employee_id = e.id
@@ -475,7 +568,7 @@ class DatabaseManager:
         """Возврат инструмента"""
         conn = self.get_connection()
         cursor = conn.cursor()
-        
+
         try:
             # Получение информации о выдаче
             cursor.execute("""
@@ -483,51 +576,126 @@ class DatabaseManager:
                 FROM issues
                 WHERE id = ?
             """, (issue_id,))
-            
+
             issue = cursor.fetchone()
             if not issue:
                 conn.close()
                 return False, "Выдача не найдена"
-            
+
             if issue[2] != 'Выдан':
                 conn.close()
                 return False, "Инструмент уже возвращен"
-            
+
             instrument_id, employee_id, _ = issue
-            
+
             # Обновление записи о выдаче
             cursor.execute("""
                 UPDATE issues
                 SET actual_return_date = CURRENT_TIMESTAMP,
                     status = 'Возвращен',
-                    notes = CASE 
+                    notes = CASE
                         WHEN notes IS NULL OR notes = '' THEN ?
                         ELSE notes || '; ' || ?
                     END
                 WHERE id = ?
             """, (notes, notes, issue_id))
-            
+
             # Обновление статуса инструмента
             cursor.execute("""
                 UPDATE instruments
                 SET status = 'Доступен'
                 WHERE id = ?
             """, (instrument_id,))
-            
+
             # Запись в историю
             cursor.execute("""
                 INSERT INTO operation_history
-                (issue_id, operation_type, instrument_id, employee_id, 
+                (issue_id, operation_type, instrument_id, employee_id,
                  performed_by, notes)
                 VALUES (?, 'Возврат', ?, ?, ?, ?)
             """, (issue_id, instrument_id, employee_id, returned_by, notes))
-            
+
             conn.commit()
             conn.close()
             return True, "Инструмент успешно возвращен"
         except Exception as e:
             conn.close()
             return False, f"Ошибка возврата: {e}"
+
+    def return_instruments_batch(self, issue_ids, notes, returned_by):
+        """Массовый возврат инструментов"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            returned_count = 0
+            errors = []
+
+            for issue_id in issue_ids:
+                try:
+                    # Получение информации о выдаче
+                    cursor.execute("""
+                        SELECT instrument_id, employee_id, status
+                        FROM issues
+                        WHERE id = ?
+                    """, (issue_id,))
+
+                    issue = cursor.fetchone()
+                    if not issue:
+                        errors.append(f"Выдача ID {issue_id}: не найдена")
+                        continue
+
+                    if issue[2] != 'Выдан':
+                        errors.append(f"Выдача ID {issue_id}: инструмент уже возвращен")
+                        continue
+
+                    instrument_id, employee_id, _ = issue
+
+                    # Обновление записи о выдаче
+                    cursor.execute("""
+                        UPDATE issues
+                        SET actual_return_date = CURRENT_TIMESTAMP,
+                            status = 'Возвращен',
+                            notes = CASE
+                                WHEN notes IS NULL OR notes = '' THEN ?
+                                ELSE notes || '; ' || ?
+                            END
+                        WHERE id = ?
+                    """, (notes, notes, issue_id))
+
+                    # Обновление статуса инструмента
+                    cursor.execute("""
+                        UPDATE instruments
+                        SET status = 'Доступен'
+                        WHERE id = ?
+                    """, (instrument_id,))
+
+                    # Запись в историю
+                    cursor.execute("""
+                        INSERT INTO operation_history
+                        (issue_id, operation_type, instrument_id, employee_id,
+                         performed_by, notes)
+                        VALUES (?, 'Возврат', ?, ?, ?, ?)
+                    """, (issue_id, instrument_id, employee_id, returned_by, notes))
+
+                    returned_count += 1
+
+                except Exception as e:
+                    errors.append(f"Выдача ID {issue_id}: {e}")
+
+            conn.commit()
+            conn.close()
+
+            result_message = f"Успешно возвращено: {returned_count} инструментов"
+            if errors:
+                result_message += f"\nОшибки: {len(errors)}"
+                result_message += "\n" + "\n".join(errors[:5])  # Показываем первые 5 ошибок
+
+            return True, result_message
+
+        except Exception as e:
+            conn.close()
+            return False, f"Ошибка массового возврата: {e}"
     
     def get_issues_statistics(self):
         """Получение статистики по выдачам"""
@@ -552,57 +720,91 @@ class DatabaseManager:
         
         return {'total': total, 'overdue': overdue}
     
-    # ========== ИСТОРИЯ ==========
+    # ========== ЖУРНАЛ ОПЕРАЦИЙ ==========
     
-    def get_operation_history(self, filter_type='Все', limit=100):
-        """Получение истории операций"""
+    def get_operation_history(self, filter_type='Все', limit=100, search_text='', date_from=None, date_to=None):
+        """Получение журнала операций с поиском по всем столбцам и фильтром по дате
+        
+        Args:
+            filter_type: тип операции ('Все', 'Выдача', 'Возврат')
+            limit: максимальное количество записей
+            search_text: текст для поиска
+            date_from: начальная дата (строка в формате 'YYYY-MM-DD' или None)
+            date_to: конечная дата (строка в формате 'YYYY-MM-DD' или None)
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        if filter_type == 'Все':
-            query = """
-                SELECT 
-                    oh.id,
-                    oh.operation_type,
-                    ins.inventory_number,
-                    ins.name,
-                    e.full_name,
-                    COALESCE(NULLIF(a.full_address, ''), a.name, ''),
-                    datetime(oh.operation_date, 'localtime'),
-                    oh.performed_by,
-                    oh.notes
-                FROM operation_history oh
-                JOIN instruments ins ON oh.instrument_id = ins.id
-                JOIN employees e ON oh.employee_id = e.id
-                LEFT JOIN issues iss ON oh.issue_id = iss.id
-                LEFT JOIN addresses a ON iss.address_id = a.id
-                ORDER BY oh.operation_date DESC
-                LIMIT ?
-            """
-            cursor.execute(query, (limit,))
-        else:
-            query = """
-                SELECT 
-                    oh.id,
-                    oh.operation_type,
-                    ins.inventory_number,
-                    ins.name,
-                    e.full_name,
-                    COALESCE(NULLIF(a.full_address, ''), a.name, ''),
-                    datetime(oh.operation_date, 'localtime'),
-                    oh.performed_by,
-                    oh.notes
-                FROM operation_history oh
-                JOIN instruments ins ON oh.instrument_id = ins.id
-                JOIN employees e ON oh.employee_id = e.id
-                LEFT JOIN issues iss ON oh.issue_id = iss.id
-                LEFT JOIN addresses a ON iss.address_id = a.id
-                WHERE oh.operation_type = ?
-                ORDER BY oh.operation_date DESC
-                LIMIT ?
-            """
-            cursor.execute(query, (filter_type, limit))
+        # Функция для преобразования текста в нижний регистр (для поиска)
+        conn.create_function('LOWER_PY', 1, lambda x: x.lower() if x else '')
         
+        search_text_lower = search_text.lower().strip() if search_text else ''
+        has_search = bool(search_text_lower)
+        
+        # Базовый запрос
+        base_query = """
+            SELECT 
+                oh.id,
+                oh.operation_type,
+                ins.inventory_number,
+                ins.name,
+                e.full_name,
+                COALESCE(NULLIF(a.full_address, ''), a.name, '') as address,
+                datetime(oh.operation_date, 'localtime') as operation_date,
+                oh.performed_by,
+                oh.notes
+            FROM operation_history oh
+            JOIN instruments ins ON oh.instrument_id = ins.id
+            JOIN employees e ON oh.employee_id = e.id
+            LEFT JOIN issues iss ON oh.issue_id = iss.id
+            LEFT JOIN addresses a ON iss.address_id = a.id
+        """
+        
+        # Условия WHERE
+        where_conditions = []
+        params = []
+        
+        # Фильтр по типу операции
+        if filter_type != 'Все':
+            where_conditions.append("oh.operation_type = ?")
+            params.append(filter_type)
+        
+        # Фильтр по диапазону дат
+        if date_from:
+            where_conditions.append("date(oh.operation_date) >= ?")
+            params.append(date_from)
+        
+        if date_to:
+            where_conditions.append("date(oh.operation_date) <= ?")
+            params.append(date_to)
+        
+        # Поиск по всем столбцам
+        if has_search:
+            search_pattern = f'%{search_text_lower}%'
+            search_conditions = [
+                "CAST(oh.id AS TEXT) LIKE ?",
+                "LOWER_PY(oh.operation_type) LIKE ?",
+                "LOWER_PY(ins.inventory_number) LIKE ?",
+                "LOWER_PY(ins.name) LIKE ?",
+                "LOWER_PY(e.full_name) LIKE ?",
+                "LOWER_PY(COALESCE(NULLIF(a.full_address, ''), a.name, '')) LIKE ?",
+                "LOWER_PY(datetime(oh.operation_date, 'localtime')) LIKE ?",
+                "LOWER_PY(oh.performed_by) LIKE ?",
+                "LOWER_PY(COALESCE(oh.notes, '')) LIKE ?"
+            ]
+            where_conditions.append(f"({' OR '.join(search_conditions)})")
+            params.extend([search_pattern] * len(search_conditions))
+        
+        # Формируем полный запрос
+        if where_conditions:
+            query = base_query + " WHERE " + " AND ".join(where_conditions)
+        else:
+            query = base_query
+        
+        query += " ORDER BY oh.operation_date DESC LIMIT ?"
+        params.append(limit)
+        
+        cursor.execute(query, params)
         history = cursor.fetchall()
         conn.close()
         
@@ -869,4 +1071,118 @@ class DatabaseManager:
                 'total_returns': result[3]
             }
         return None
+
+    def get_analytics_data(self):
+        """Получение данных для расширенной аналитики"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+
+        try:
+            analytics = {}
+
+            # 1. Выдачи по месяцам за последний год
+            cursor.execute("""
+                SELECT
+                    strftime('%Y-%m', issue_date) as month,
+                    COUNT(*) as issue_count
+                FROM issues
+                WHERE issue_date >= date('now', '-12 months')
+                GROUP BY strftime('%Y-%m', issue_date)
+                ORDER BY month
+            """)
+            analytics['issues_by_month'] = cursor.fetchall()
+
+            # 2. Возвраты по месяцам за последний год
+            cursor.execute("""
+                SELECT
+                    strftime('%Y-%m', actual_return_date) as month,
+                    COUNT(*) as return_count
+                FROM issues
+                WHERE actual_return_date IS NOT NULL
+                    AND actual_return_date >= date('now', '-12 months')
+                GROUP BY strftime('%Y-%m', actual_return_date)
+                ORDER BY month
+            """)
+            analytics['returns_by_month'] = cursor.fetchall()
+
+            # 3. Среднее время использования инструментов
+            cursor.execute("""
+                SELECT
+                    AVG(julianday(actual_return_date) - julianday(issue_date)) as avg_days
+                FROM issues
+                WHERE actual_return_date IS NOT NULL
+                    AND status = 'Возвращен'
+                    AND actual_return_date >= date('now', '-12 months')
+            """)
+            avg_usage_result = cursor.fetchone()
+            analytics['avg_usage_days'] = avg_usage_result[0] if avg_usage_result[0] else 0
+
+            # 4. Просроченные выдачи по категориям
+            cursor.execute("""
+                SELECT
+                    COALESCE(i.category, 'Без категории') as category,
+                    COUNT(*) as overdue_count
+                FROM issues isu
+                JOIN instruments i ON isu.instrument_id = i.id
+                WHERE isu.status = 'Выдан'
+                    AND isu.expected_return_date < date('now')
+                GROUP BY i.category
+                ORDER BY overdue_count DESC
+            """)
+            analytics['overdue_by_category'] = cursor.fetchall()
+
+            # 5. Выдачи по адресам
+            cursor.execute("""
+                SELECT
+                    COALESCE(a.name, 'Не указан') as address,
+                    COUNT(*) as issue_count
+                FROM issues isu
+                LEFT JOIN addresses a ON isu.address_id = a.id
+                WHERE isu.issue_date >= date('now', '-6 months')
+                GROUP BY a.name
+                ORDER BY issue_count DESC
+                LIMIT 10
+            """)
+            analytics['issues_by_address'] = cursor.fetchall()
+
+            # 6. Статистика по статусам инструментов
+            cursor.execute("""
+                SELECT
+                    status,
+                    COUNT(*) as count
+                FROM instruments
+                GROUP BY status
+            """)
+            analytics['instrument_status_stats'] = cursor.fetchall()
+
+            # 7. Динамика активных выдач по дням (последние 30 дней)
+            cursor.execute("""
+                SELECT
+                    date('now', '-' || (30 - n) || ' days') as date,
+                    (
+                        SELECT COUNT(*)
+                        FROM issues
+                        WHERE status = 'Выдан'
+                            AND issue_date <= date('now', '-' || (30 - n) || ' days')
+                            AND (actual_return_date IS NULL OR actual_return_date > date('now', '-' || (30 - n) || ' days'))
+                    ) as active_count
+                FROM (
+                    SELECT 1 as n UNION SELECT 2 UNION SELECT 3 UNION SELECT 4 UNION SELECT 5 UNION
+                    SELECT 6 UNION SELECT 7 UNION SELECT 8 UNION SELECT 9 UNION SELECT 10 UNION
+                    SELECT 11 UNION SELECT 12 UNION SELECT 13 UNION SELECT 14 UNION SELECT 15 UNION
+                    SELECT 16 UNION SELECT 17 UNION SELECT 18 UNION SELECT 19 UNION SELECT 20 UNION
+                    SELECT 21 UNION SELECT 22 UNION SELECT 23 UNION SELECT 24 UNION SELECT 25 UNION
+                    SELECT 26 UNION SELECT 27 UNION SELECT 28 UNION SELECT 29 UNION SELECT 30
+                )
+                ORDER BY date
+            """)
+            analytics['active_issues_trend'] = cursor.fetchall()
+
+            conn.close()
+            return analytics
+
+        except Exception as e:
+            print(f"Ошибка получения аналитических данных: {e}")
+            conn.close()
+            return None
 
