@@ -104,10 +104,103 @@ class ToolManagementApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Система учета инструмента")
-        
+
+        # Ранняя инициализация основных атрибутов
+        self.office_colors = OFFICE_COLORS.copy()  # Создаем копию для модификации
+
         # Инициализация конфигурации окон
         self.window_config = WindowConfig()
-        
+
+        # Инициализация менеджера тем
+        try:
+            print("🔄 Инициализация менеджера тем...")
+            from theme_manager import init_theme_manager, ThemeManager
+            print("📦 Импорт theme_manager успешен")
+
+            # Проверяем, можем ли мы создать экземпляр ThemeManager
+            temp_manager = ThemeManager()
+            print("🎨 ThemeManager создан успешно")
+
+            self.theme_manager = init_theme_manager()
+            print("✅ Менеджер тем инициализирован")
+
+            # Синхронизируем office_colors с текущей темой
+            if self.theme_manager:
+                try:
+                    theme_colors = self.theme_manager.get_current_theme()
+                    print(f"🎨 Текущая тема: {theme_colors.get('name', 'неизвестна')}")
+                    self.office_colors.update({
+                        'bg_white': theme_colors.get('tree_bg', '#ffffff'),
+                        'bg_main': theme_colors.get('bg', '#f0f0f0'),
+                        'bg_header': theme_colors.get('tree_heading_bg', '#e8e8e8'),
+                        'bg_header_light': theme_colors.get('notebook_active', '#f0f0f0'),
+                        'bg_selected': theme_colors.get('tree_selected', '#cce4ff'),
+                        'bg_hover': theme_colors.get('button_hover', '#f0f0f0'),
+                        'hover': theme_colors.get('button_hover', '#f0f0f0'),
+                        'fg_main': theme_colors.get('tree_fg', '#000000'),
+                        'fg_secondary': theme_colors.get('fg', '#666666'),
+                        'fg_header': theme_colors.get('tree_heading_fg', '#000000'),
+                        'selected': theme_colors.get('accent', '#0078d4'),
+                        'border': theme_colors.get('border', '#c0c0c0'),
+                        'overdue': theme_colors.get('error', '#ffcccc'),
+                        'warning': theme_colors.get('warning', '#ffffcc'),
+                        'success': theme_colors.get('success', '#ccffcc')
+                    })
+                    print("🎨 Цвета office_colors обновлены")
+                except Exception as color_e:
+                    print(f"⚠️ Ошибка обновления цветов: {color_e}")
+                    # Используем цвета по умолчанию
+        except ImportError as ie:
+            print(f"❌ Ошибка импорта theme_manager: {ie}")
+            print("💡 Проверьте наличие файла theme_manager.py")
+            print("⚠️ Приложение продолжит работу без поддержки тем")
+            self.theme_manager = None
+        except Exception as e:
+            print(f"❌ Ошибка инициализации менеджера тем: {e}")
+            import traceback
+            print(f"📋 Подробности ошибки:\n{traceback.format_exc()}")
+            print("⚠️ Приложение продолжит работу с базовой темой")
+            self.theme_manager = None
+
+        # Если theme_manager не инициализирован, используем базовые цвета
+        if not self.theme_manager:
+            print("ℹ️ Используются базовые цвета интерфейса")
+            # office_colors уже инициализирован базовыми значениями из OFFICE_COLORS
+
+        # Загружаем сохраненный токен Telegram бота
+        self._load_telegram_token()
+
+        # Инициализация Telegram бота
+        try:
+            from telegram_bot import init_telegram_bot, start_telegram_bot
+            self.telegram_bot = init_telegram_bot()
+            if self.telegram_bot:
+                print("✅ Telegram бот инициализирован")
+                # Запуск бота в отдельном потоке
+                try:
+                    bot_thread = start_telegram_bot()
+                    if bot_thread:
+                        print("✅ Telegram бот запущен в фоне")
+                except RuntimeError as re:
+                    if "Несовместимость python-telegram-bot с Python 3.13" in str(re):
+                        print("❌ Telegram бот не запущен из-за несовместимости с Python 3.13")
+                        print("💡 Рекомендации:")
+                        print("   1. Обновите python-telegram-bot: pip install --upgrade python-telegram-bot")
+                        print("   2. Или используйте Python 3.12 или ниже")
+                        print("   3. Проверьте версию: pip show python-telegram-bot")
+                        self.telegram_bot = None
+                    else:
+                        raise
+            else:
+                print("⚠️ Telegram бот не настроен (отсутствует токен)")
+        except ImportError:
+            print("⚠️ Telegram бот недоступен (не установлена библиотека python-telegram-bot)")
+            self.telegram_bot = None
+        except Exception as e:
+            print(f"❌ Ошибка инициализации Telegram бота: {e}")
+            self.telegram_bot = None
+
+
         # Восстановление размера и позиции основного окна
         # auto_save=False, так как мы используем оптимизированный обработчик с debouncing
         default_geometry = "1200x700"
@@ -134,6 +227,20 @@ class ToolManagementApp:
         # Инициализация базы данных
         self.db = DatabaseManager()
 
+        # Инициализация системы уведомлений
+        try:
+            from notification_manager import init_notification_manager, start_notifications
+            self.notification_manager = init_notification_manager(self.db, self.telegram_bot)
+            print("✅ Система уведомлений инициализирована")
+
+            # Запуск мониторинга уведомлений
+            start_notifications()
+            print("✅ Мониторинг уведомлений запущен")
+
+        except Exception as e:
+            print(f"❌ Ошибка инициализации уведомлений: {e}")
+            self.notification_manager = None
+
         # Инициализация экспортеров
         self.xml_json_exporter = XMLJSONExporter()
         
@@ -157,7 +264,47 @@ class ToolManagementApp:
         # Создание интерфейса
         self.create_widgets()
         self.load_data()
-    
+
+        # Запуск обработки уведомлений в главном потоке
+        self._schedule_notification_check()
+
+    def _schedule_notification_check(self):
+        """Планирование периодической проверки уведомлений"""
+        # Проверяем уведомления каждые 2 секунды
+        self.root.after(2000, self._process_pending_notifications)
+
+    def _process_pending_notifications(self):
+        """Обработка ожидающих уведомлений в главном потоке"""
+        try:
+            if self.notification_manager:
+                notifications = self.notification_manager.get_pending_notifications()
+                for title, message in notifications:
+                    self._show_desktop_notification_main_thread(title, message)
+
+            # Планируем следующую проверку
+            self.root.after(2000, self._process_pending_notifications)
+
+        except Exception as e:
+            print(f"Ошибка обработки уведомлений: {e}")
+            # Продолжаем планировать проверки даже при ошибке
+            self.root.after(2000, self._process_pending_notifications)
+
+    def _show_desktop_notification_main_thread(self, title, message):
+        """Показать desktop уведомление в главном потоке"""
+        try:
+            from tkinter import messagebox
+
+            # Показываем диалог с сообщением
+            if len(message) > 500:
+                # Для длинных сообщений показываем только начало
+                short_message = message[:500] + "..."
+                messagebox.showwarning(title, short_message)
+            else:
+                messagebox.showwarning(title, message)
+
+        except Exception as e:
+            print(f"Ошибка показа desktop уведомления: {e}")
+
     def setup_office_style(self):
         """Настройка стиля в стиле MS Office"""
         style = ttk.Style()
@@ -170,9 +317,6 @@ class ToolManagementApp:
         self.default_font = default_font
         self.title_font = title_font
         self.tab_font = tab_font
-        
-        # Цветовая схема MS Office
-        self.office_colors = OFFICE_COLORS
         
         # Настройка фона главного окна
         self.root.configure(bg=self.office_colors['bg_main'])
@@ -337,7 +481,16 @@ class ToolManagementApp:
         self.create_addresses_tab()
         self.create_statistics_tab()
         self.create_analytics_tab()
-    
+
+        # Применение темы к интерфейсу
+        if self.theme_manager:
+            try:
+                from theme_manager import apply_theme_to_app
+                apply_theme_to_app(self.root)
+                print("✅ Тема применена к интерфейсу")
+            except Exception as e:
+                print(f"❌ Ошибка применения темы: {e}")
+
     def create_menu(self):
         """Создание меню приложения"""
         menubar = tk.Menu(self.root)
@@ -356,6 +509,20 @@ class ToolManagementApp:
         file_menu.add_separator()
         file_menu.add_command(label="Выход", command=self._on_closing, accelerator="Alt+F4")
         
+        # Меню "Инструменты"
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Инструменты", menu=tools_menu)
+        tools_menu.add_command(label="Настройки Telegram бота", command=self.configure_telegram_bot)
+
+        # Подменю тем
+        theme_menu = tk.Menu(tools_menu, tearoff=0)
+        tools_menu.add_cascade(label="Тема интерфейса", menu=theme_menu)
+        theme_menu.add_command(label="Светлая тема", command=lambda: self.change_theme('light'))
+        theme_menu.add_command(label="Темная тема", command=lambda: self.change_theme('dark'))
+
+        tools_menu.add_separator()
+        tools_menu.add_command(label="Настройки уведомлений", command=self.configure_notifications)
+
         # Меню "Справка"
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Справка", menu=help_menu)
@@ -364,6 +531,7 @@ class ToolManagementApp:
         # Привязка горячих клавиш
         self.root.bind('<Control-b>', lambda e: self.backup_database())
         self.root.bind('<Control-r>', lambda e: self.restore_database())
+        self.root.bind('<F11>', lambda e: self.toggle_theme())  # Переключение темы
     
     def _create_button(self, parent, text, command, side=tk.LEFT, style='default'):
         """Создание кнопки в стиле MS Office"""
@@ -423,6 +591,11 @@ class ToolManagementApp:
         # Контейнер для таблицы
         tree_container = tk.Frame(parent, bg=self.office_colors['bg_white'])
         tree_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Применяем текущую тему к контейнеру
+        if self.theme_manager:
+            theme_colors = self.theme_manager.get_current_theme()
+            tree_container.configure(bg=theme_colors.get('frame_bg', self.office_colors['bg_white']))
         
         tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=TREEVIEW_HEIGHT)
         
@@ -2579,6 +2752,561 @@ class ToolManagementApp:
             "GitHub: https://github.com/inpredservice11-beep/Instruments"
         )
         messagebox.showinfo("О программе", about_text)
+
+    def configure_telegram_bot(self):
+        """Настройка Telegram бота"""
+        import os
+
+        # Создаем диалог настройки
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Настройки Telegram бота")
+        dialog.geometry("550x500")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Центрируем диалог
+        dialog.geometry("+{}+{}".format(
+            self.root.winfo_x() + (self.root.winfo_width() - 550) // 2,
+            self.root.winfo_y() + (self.root.winfo_height() - 500) // 2
+        ))
+
+        # Создаем фрейм с отступами
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Заголовок
+        ttk.Label(main_frame, text="Настройки Telegram бота",
+                 font=("Arial", 12, "bold")).pack(pady=(0, 20))
+
+        # Инструкция
+        instruction_text = (
+            "1. Создайте бота в Telegram:\n"
+            "   • Напишите @BotFather\n"
+            "   • Отправьте /newbot\n"
+            "   • Следуйте инструкциям\n\n"
+            "2. Скопируйте токен бота\n\n"
+            "3. Вставьте токен ниже:"
+        )
+
+        ttk.Label(main_frame, text=instruction_text, justify=tk.LEFT).pack(pady=(0, 15))
+
+        # Поле для токена
+        token_frame = ttk.Frame(main_frame)
+        token_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(token_frame, text="Токен бота:").pack(anchor=tk.W)
+        # Загружаем токен из файла или переменной окружения
+        saved_token = self._load_telegram_token() or os.getenv('TELEGRAM_BOT_TOKEN', '')
+        token_var = tk.StringVar(value=saved_token)
+        token_entry = ttk.Entry(token_frame, textvariable=token_var, width=50)
+        token_entry.pack(fill=tk.X, pady=(5, 0))
+
+        # Добавляем поддержку горячих клавиш
+        def handle_key_press(event):
+            # Ctrl+V для вставки
+            if event.state & 0x4 and event.keysym.lower() == 'v':
+                try:
+                    clipboard_text = dialog.clipboard_get()
+                    current_text = token_var.get()
+                    cursor_pos = token_entry.index(tk.INSERT)
+                    new_text = current_text[:cursor_pos] + clipboard_text + current_text[cursor_pos:]
+                    token_var.set(new_text)
+                    token_entry.icursor(cursor_pos + len(clipboard_text))
+                    return "break"
+                except:
+                    pass
+            # Ctrl+A для выделения всего текста
+            elif event.state & 0x4 and event.keysym.lower() == 'a':
+                token_entry.select_range(0, tk.END)
+                token_entry.icursor(tk.END)
+                return "break"
+            # Ctrl+X для вырезания
+            elif event.state & 0x4 and event.keysym.lower() == 'x':
+                try:
+                    if token_entry.selection_present():
+                        selected_text = token_entry.selection_get()
+                        dialog.clipboard_clear()
+                        dialog.clipboard_append(selected_text)
+                        # Удаляем выделенный текст
+                        start = token_entry.index(tk.SEL_FIRST)
+                        end = token_entry.index(tk.SEL_LAST)
+                        current_text = token_var.get()
+                        new_text = current_text[:int(start)] + current_text[int(end):]
+                        token_var.set(new_text)
+                        token_entry.icursor(int(start))
+                    return "break"
+                except:
+                    pass
+            # Ctrl+C для копирования
+            elif event.state & 0x4 and event.keysym.lower() == 'c':
+                try:
+                    if token_entry.selection_present():
+                        selected_text = token_entry.selection_get()
+                        dialog.clipboard_clear()
+                        dialog.clipboard_append(selected_text)
+                    return "break"
+                except:
+                    pass
+            return None
+
+        token_entry.bind('<Key>', handle_key_press)
+
+        # Добавляем контекстное меню
+        def show_context_menu(event):
+            try:
+                menu = tk.Menu(dialog, tearoff=0)
+                menu.add_command(label="Вырезать", command=lambda: cut_selection())
+                menu.add_command(label="Копировать", command=lambda: copy_selection())
+                menu.add_command(label="Вставить", command=lambda: paste_from_clipboard())
+                menu.add_separator()
+                menu.add_command(label="Выделить все", command=lambda: select_all_text())
+                menu.tk_popup(event.x_root, event.y_root)
+            except:
+                pass
+
+        def cut_selection():
+            try:
+                if token_entry.selection_present():
+                    selected_text = token_entry.selection_get()
+                    dialog.clipboard_clear()
+                    dialog.clipboard_append(selected_text)
+                    # Удаляем выделенный текст
+                    start = token_entry.index(tk.SEL_FIRST)
+                    end = token_entry.index(tk.SEL_LAST)
+                    current_text = token_var.get()
+                    new_text = current_text[:int(start)] + current_text[int(end):]
+                    token_var.set(new_text)
+                    token_entry.icursor(int(start))
+            except:
+                pass
+
+        def copy_selection():
+            try:
+                if token_entry.selection_present():
+                    selected_text = token_entry.selection_get()
+                    dialog.clipboard_clear()
+                    dialog.clipboard_append(selected_text)
+            except:
+                pass
+
+        def select_all_text():
+            token_entry.select_range(0, tk.END)
+            token_entry.focus_set()
+
+        def paste_from_clipboard():
+            try:
+                clipboard_text = dialog.clipboard_get()
+                current_text = token_var.get()
+                cursor_pos = token_entry.index(tk.INSERT)
+                new_text = current_text[:cursor_pos] + clipboard_text + current_text[cursor_pos:]
+                token_var.set(new_text)
+                token_entry.icursor(cursor_pos + len(clipboard_text))
+            except:
+                pass
+
+        token_entry.bind('<Button-3>', show_context_menu)  # Правая кнопка мыши
+
+        # Статус бота
+        status_frame = ttk.Frame(main_frame)
+        status_frame.pack(fill=tk.X, pady=(10, 0))
+
+        if self.telegram_bot:
+            status_text = "✅ Бот активен"
+            status_color = "green"
+        else:
+            status_text = "❌ Бот не настроен"
+            status_color = "red"
+
+        status_label = ttk.Label(status_frame, text=f"Статус: {status_text}", foreground=status_color)
+        status_label.pack(anchor=tk.W)
+
+        # Разделитель
+        separator = ttk.Separator(main_frame, orient='horizontal')
+        separator.pack(fill=tk.X, pady=(20, 10))
+
+        # Кнопки
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(10, 20))
+
+        def save_token():
+            token = token_var.get().strip()
+            if token:
+                # Сохраняем токен в файл конфигурации
+                try:
+                    self._save_telegram_token(token)
+                    print(f"✅ Токен Telegram бота сохранен")
+                except Exception as save_e:
+                    messagebox.showerror("Ошибка сохранения", f"Не удалось сохранить токен: {save_e}")
+                    return
+
+                # Сохраняем токен в переменную окружения для текущего сеанса
+                os.environ['TELEGRAM_BOT_TOKEN'] = token
+
+                # Перезапускаем бота если возможно
+                try:
+                    from telegram_bot import init_telegram_bot, start_telegram_bot
+                    if self.telegram_bot:
+                        # Здесь можно добавить логику перезапуска бота
+                        pass
+
+                    new_bot = init_telegram_bot(token)
+                    if new_bot:
+                        bot_thread = start_telegram_bot()
+                        if bot_thread:
+                            self.telegram_bot = new_bot
+                            status_label.config(text="Статус: ✅ Бот активен", foreground="green")
+                            messagebox.showinfo("Успех", "Telegram бот настроен и запущен!")
+                        else:
+                            status_label.config(text="Статус: ❌ Ошибка запуска", foreground="red")
+                    else:
+                        status_label.config(text="Статус: ❌ Ошибка инициализации", foreground="red")
+
+                except Exception as e:
+                    messagebox.showerror("Ошибка", f"Не удалось запустить бота: {e}")
+                    status_label.config(text="Статус: ❌ Ошибка", foreground="red")
+            else:
+                messagebox.showwarning("Предупреждение", "Введите токен бота")
+
+        def test_bot():
+            if self.telegram_bot:
+                messagebox.showinfo("Тест", "Бот активен! Отправьте /start в Telegram чат с ботом.")
+            else:
+                messagebox.showwarning("Тест", "Бот не активен. Настройте токен и сохраните.")
+
+        ttk.Button(button_frame, text="Сохранить и запустить", command=save_token).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Button(button_frame, text="Тестировать", command=test_bot).pack(side=tk.LEFT, padx=(0, 15))
+        ttk.Button(button_frame, text="Закрыть", command=dialog.destroy).pack(side=tk.RIGHT)
+
+        # Фокус на поле токена
+        token_entry.focus_set()
+
+    def configure_notifications(self):
+        """Настройка системы уведомлений"""
+        if not self.notification_manager:
+            messagebox.showwarning("Предупреждение", "Система уведомлений не инициализирована")
+            return
+
+        # Создаем диалог настройки
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Настройки уведомлений")
+        dialog.geometry("500x500")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Центрируем диалог
+        dialog.geometry("+{}+{}".format(
+            self.root.winfo_x() + (self.root.winfo_width() - 500) // 2,
+            self.root.winfo_y() + (self.root.winfo_height() - 500) // 2
+        ))
+
+        # Создаем фрейм с отступами
+        main_frame = ttk.Frame(dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Заголовок
+        ttk.Label(main_frame, text="Настройки уведомлений",
+                 font=("Arial", 12, "bold")).pack(pady=(0, 20))
+
+        # Получаем текущие настройки
+        settings = self.notification_manager.settings
+
+        # Фрейм для настроек
+        settings_frame = ttk.LabelFrame(main_frame, text="Общие настройки", padding="10")
+        settings_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # Переменные для чекбоксов
+        desktop_var = tk.BooleanVar(value=settings.get('enable_desktop_notifications', True))
+        telegram_var = tk.BooleanVar(value=settings.get('enable_telegram_notifications', True))
+
+        # Чекбоксы настроек
+        ttk.Checkbutton(settings_frame, text="Включить desktop уведомления",
+                        variable=desktop_var).pack(anchor=tk.W, pady=2)
+        ttk.Checkbutton(settings_frame, text="Включить Telegram уведомления",
+                        variable=telegram_var).pack(anchor=tk.W, pady=2)
+
+        # Фрейм для настроек сроков
+        timing_frame = ttk.LabelFrame(main_frame, text="Настройки сроков", padding="10")
+        timing_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # Поля для настройки дней
+        ttk.Label(timing_frame, text="Предупреждать за дней до просрочки:").pack(anchor=tk.W)
+        warning_days_var = tk.IntVar(value=settings.get('overdue_warning_days', 1))
+        warning_spin = tk.Spinbox(timing_frame, from_=0, to=30, textvariable=warning_days_var, width=5)
+        warning_spin.pack(anchor=tk.W, pady=(0, 10))
+
+        ttk.Label(timing_frame, text="Критическая просрочка через дней:").pack(anchor=tk.W)
+        critical_days_var = tk.IntVar(value=settings.get('overdue_critical_days', 3))
+        critical_spin = tk.Spinbox(timing_frame, from_=1, to=30, textvariable=critical_days_var, width=5)
+        critical_spin.pack(anchor=tk.W, pady=(0, 10))
+
+        # Статус системы уведомлений
+        status_frame = ttk.LabelFrame(main_frame, text="Статус системы", padding="10")
+        status_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # Получаем информацию о просрочках
+        overdue_summary = self.notification_manager.get_overdue_summary()
+
+        status_text = f"""Система уведомлений: {'✅ Активна' if self.notification_manager.is_running else '❌ Не активна'}
+
+Текущая статистика:
+• Просроченных возвратов: {overdue_summary['total_overdue']}
+• Критических просрочек: {overdue_summary['critical_overdue']}
+• Предстоящих возвратов: {overdue_summary['upcoming_deadlines']}
+
+Интервал проверки: {self.notification_manager.check_interval // 60} мин"""
+
+        status_label = ttk.Label(status_frame, text=status_text, justify=tk.LEFT)
+        status_label.pack(anchor=tk.W)
+
+        # Кнопки
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(fill=tk.X, pady=(20, 0))
+
+        def save_settings():
+            new_settings = {
+                'enable_desktop_notifications': desktop_var.get(),
+                'enable_telegram_notifications': telegram_var.get(),
+                'overdue_warning_days': warning_days_var.get(),
+                'overdue_critical_days': critical_days_var.get(),
+            }
+
+            self.notification_manager.update_settings(new_settings)
+            messagebox.showinfo("Успех", "Настройки уведомлений сохранены!")
+            dialog.destroy()
+
+        def test_notification():
+            # Тестируем уведомление
+            test_message = "🔔 Это тестовое уведомление!\n\nСистема уведомлений работает корректно."
+            self.notification_manager._show_desktop_notification("Тест уведомления", test_message)
+            messagebox.showinfo("Тест", "Тестовое уведомление отправлено!")
+
+        ttk.Button(button_frame, text="Сохранить настройки", command=save_settings).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Тест уведомления", command=test_notification).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(button_frame, text="Закрыть", command=dialog.destroy).pack(side=tk.RIGHT)
+
+    def change_theme(self, theme_name):
+        """Изменение темы интерфейса"""
+        if not self.theme_manager:
+            messagebox.showwarning("Предупреждение", "Менеджер тем не инициализирован")
+            return
+
+        # Проверяем наличие office_colors
+        if not hasattr(self, 'office_colors'):
+            print("❌ Ошибка: office_colors не инициализирован")
+            messagebox.showerror("Ошибка", "Цветовая схема не инициализирована")
+            return
+
+        try:
+            print(f"🔄 Изменение темы на: {theme_name}")
+            if self.theme_manager.set_theme(theme_name):
+                print(f"✅ Тема {theme_name} установлена в theme_manager")
+
+                # Обновляем office_colors на основе новой темы
+                theme_colors = self.theme_manager.get_current_theme()
+                print(f"🎨 Получены цвета темы: {theme_colors.get('name', 'неизвестная')}")
+
+                self.office_colors.update({
+                    'bg_white': theme_colors.get('tree_bg', '#ffffff'),
+                    'bg_main': theme_colors.get('bg', '#f0f0f0'),
+                    'bg_header': theme_colors.get('tree_heading_bg', '#e8e8e8'),
+                    'bg_header_light': theme_colors.get('notebook_active', '#f0f0f0'),
+                    'bg_selected': theme_colors.get('tree_selected', '#cce4ff'),
+                    'bg_hover': theme_colors.get('button_hover', '#f0f0f0'),
+                    'hover': theme_colors.get('button_hover', '#f0f0f0'),
+                    'fg_main': theme_colors.get('tree_fg', '#000000'),
+                    'fg_secondary': theme_colors.get('fg', '#666666'),
+                    'fg_header': theme_colors.get('tree_heading_fg', '#000000'),
+                    'selected': theme_colors.get('accent', '#0078d4'),
+                    'border': theme_colors.get('border', '#c0c0c0'),
+                    'overdue': theme_colors.get('error', '#ffcccc'),
+                    'warning': theme_colors.get('warning', '#ffffcc'),
+                    'success': theme_colors.get('success', '#ccffcc')
+                })
+                print("🎨 office_colors обновлены")
+
+                # Перерисовываем интерфейс с новыми цветами
+                print("🔄 Обновление интерфейса...")
+                self._update_interface_colors()
+
+                # Применяем новую тему через theme_manager
+                from theme_manager import apply_theme_to_app
+                apply_theme_to_app(self.root)
+                print("🎨 apply_theme_to_app выполнен")
+
+                theme_names = {
+                    'light': 'светлая',
+                    'dark': 'темная'
+                }
+                theme_display_name = theme_names.get(theme_name, theme_name)
+
+                print(f"✅ Тема изменена на {theme_display_name}")
+                # Не показываем messagebox для быстрого переключения
+            else:
+                print(f"❌ Неизвестная тема: {theme_name}")
+                messagebox.showerror("Ошибка", f"Неизвестная тема: {theme_name}")
+        except Exception as e:
+            print(f"❌ Ошибка изменения темы: {e}")
+            import traceback
+            print(f"📋 Подробности ошибки:\n{traceback.format_exc()}")
+            messagebox.showerror("Ошибка", f"Не удалось изменить тему: {e}")
+
+    def _save_telegram_token(self, token):
+        """Сохранение токена Telegram бота в файл"""
+        import json
+        import os
+        try:
+            config_file = 'telegram_config.json'
+            config = {'telegram_bot_token': token}
+
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+
+            print(f"✅ Токен сохранен в {config_file}")
+        except Exception as e:
+            print(f"❌ Ошибка сохранения токена: {e}")
+            raise
+
+    def _load_telegram_token(self):
+        """Загрузка токена Telegram бота из файла"""
+        import json
+        import os
+        try:
+            config_file = 'telegram_config.json'
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    token = config.get('telegram_bot_token')
+                    if token:
+                        # Устанавливаем в переменную окружения
+                        os.environ['TELEGRAM_BOT_TOKEN'] = token
+                        print(f"✅ Токен загружен из {config_file}")
+                        return token
+        except Exception as e:
+            print(f"⚠️ Ошибка загрузки токена: {e}")
+
+        return None
+
+    def _update_interface_colors(self):
+        """Обновление цветов интерфейса при смене темы"""
+        # Проверяем наличие office_colors
+        if not hasattr(self, 'office_colors'):
+            print("❌ Ошибка: office_colors не инициализирован в _update_interface_colors")
+            return
+
+        try:
+            # Обновляем основной фон
+            self.root.configure(bg=self.office_colors['bg_main'])
+
+            # Обновляем header и toolbar
+            for widget in self.root.winfo_children():
+                if isinstance(widget, tk.Frame):
+                    # Header frame
+                    if hasattr(widget, 'cget') and widget.cget('height') == 60:
+                        widget.configure(bg=self.office_colors['bg_header'])
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Label):
+                                child.configure(bg=self.office_colors['bg_header'], fg=self.office_colors['fg_header'])
+
+                    # Toolbar frame
+                    elif hasattr(widget, 'cget') and widget.cget('height') == 50:
+                        widget.configure(bg=self.office_colors['bg_white'])
+                        for child in widget.winfo_children():
+                            if isinstance(child, tk.Frame):
+                                child.configure(bg=self.office_colors['bg_white'])
+
+                    # Separator
+                    elif hasattr(widget, 'cget') and widget.cget('height') == 1:
+                        widget.configure(bg=self.office_colors['border'])
+
+            # Обновляем цвета вкладок
+            for tab_id in self.notebook.tabs():
+                tab = self.notebook.nametowidget(tab_id)
+                if tab:
+                    tab.configure(bg=self.office_colors['bg_white'])
+                    # Рекурсивно обновляем все дочерние элементы вкладки
+                    self._update_widget_colors_recursive(tab)
+
+            # Обновляем цвета в областях статистики
+            self._update_stats_colors()
+
+            # Обновляем цвета в диалогах (если они открыты)
+            self._update_dialog_colors()
+
+        except Exception as e:
+            print(f"Ошибка обновления цветов интерфейса: {e}")
+
+    def _update_widget_colors_recursive(self, widget):
+        """Рекурсивное обновление цветов виджетов"""
+        # Проверяем наличие office_colors
+        if not hasattr(self, 'office_colors'):
+            return
+
+        try:
+            if isinstance(widget, tk.Frame):
+                widget.configure(bg=self.office_colors['bg_white'])
+            elif isinstance(widget, tk.Label):
+                widget.configure(bg=self.office_colors['bg_white'], fg=self.office_colors['fg_main'])
+            elif isinstance(widget, tk.Button):
+                widget.configure(bg=self.office_colors['bg_white'], fg=self.office_colors['fg_main'])
+            elif isinstance(widget, tk.Entry):
+                widget.configure(bg=self.office_colors['bg_white'], fg=self.office_colors['fg_main'],
+                               insertbackground=self.office_colors['fg_main'])
+            elif isinstance(widget, tk.Text):
+                widget.configure(bg=self.office_colors['bg_white'], fg=self.office_colors['fg_main'])
+
+            # Рекурсивно обрабатываем дочерние виджеты
+            for child in widget.winfo_children():
+                self._update_widget_colors_recursive(child)
+
+        except:
+            pass
+
+    def _update_stats_colors(self):
+        """Обновление цветов в области статистики"""
+        # Проверяем наличие office_colors
+        if not hasattr(self, 'office_colors'):
+            return
+
+        try:
+            # Находим область статистики и обновляем цвета
+            for widget in self.root.winfo_children():
+                if isinstance(widget, tk.Frame) and hasattr(widget, 'winfo_children'):
+                    for child in widget.winfo_children():
+                        if isinstance(child, tk.Frame):
+                            child.configure(bg=self.office_colors['bg_white'])
+                            for subchild in child.winfo_children():
+                                if isinstance(subchild, tk.Label):
+                                    subchild.configure(bg=self.office_colors['bg_white'], fg=self.office_colors['fg_main'])
+        except:
+            pass
+
+    def _update_dialog_colors(self):
+        """Обновление цветов в открытых диалогах"""
+        try:
+            # Обновляем цвета в дочерних окнах (диалогах)
+            for child in self.root.winfo_children():
+                if isinstance(child, tk.Toplevel):
+                    try:
+                        from theme_manager import apply_theme_to_app
+                        apply_theme_to_app(child)
+                    except:
+                        pass
+        except:
+            pass
+
+    def toggle_theme(self):
+        """Переключение между темами (F11)"""
+        if not self.theme_manager:
+            return
+
+        try:
+            current_theme = self.theme_manager.current_theme
+            new_theme = 'dark' if current_theme == 'light' else 'light'
+            self.change_theme(new_theme)
+        except Exception as e:
+            print(f"❌ Ошибка переключения темы: {e}")
 
     def load_analytics(self):
         """Загрузка данных аналитики"""

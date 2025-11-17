@@ -268,3 +268,4 @@ class TestIntegration:
         assert "уже возвращен" in result[1].lower()
 
 
+

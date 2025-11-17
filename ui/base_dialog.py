@@ -298,3 +298,4 @@ class BarcodeDialogMixin:
         ttk.Button(preview_dialog, text="Закрыть", command=preview_dialog.destroy).pack(pady=10)
 
 
+

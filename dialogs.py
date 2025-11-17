@@ -1554,6 +1554,13 @@ class IssueInstrumentDialog:
         self.selected_instruments = []  # Список кортежей (instrument_id, display_text)
         self.address_placeholder = "Не указан"
         self.address_display_to_id = {}
+
+        # Для показа фото
+        self.photo_tooltip = None
+        self.photo_tooltip_job = None
+
+        # Словарь для хранения фото инструментов
+        self.instrument_photos = {}
         
         self.load_data()
         self.create_widgets()
@@ -1678,7 +1685,15 @@ class IssueInstrumentDialog:
         # Загрузка списка инструментов (только доступные)
         self.instruments = self.db.get_instruments()
         self.instrument_dict = {f"{i[2]} - {i[1]}": i for i in self.instruments if i[6] == 'Доступен'}
-        
+
+        # Заполняем словарь фото
+        self.instrument_photos.clear()
+        for instrument in self.instruments:
+            instrument_id = instrument[0]
+            photo_path = instrument[7] if len(instrument) > 7 else ''  # photo_path в индексе 7
+            if instrument_id and photo_path:
+                self.instrument_photos[instrument_id] = photo_path
+
         # Загрузка списка сотрудников (только активные, уволенные не показываются)
         self.employees = self.db.get_employees()
         self.employee_dict = {f"{e[1]} (ID: {e[0]})": e for e in self.employees if e[6] == 'Активен'}
@@ -1727,12 +1742,18 @@ class IssueInstrumentDialog:
         list_frame.grid(row=2, column=0, columnspan=2, sticky=tk.W+tk.E+tk.N+tk.S, pady=5)
         
         # Treeview для списка выбранных инструментов
-        columns = ('Инструмент',)
+        columns = ('Инструмент', 'Фото')
         self.instruments_list = ttk.Treeview(list_frame, columns=columns, show='headings', height=6)
         self.instruments_list.heading('Инструмент', text='Инструмент')
-        self.instruments_list.column('Инструмент', width=650)
+        self.instruments_list.heading('Фото', text='📷')
+        self.instruments_list.column('Инструмент', width=600)
+        self.instruments_list.column('Фото', width=50, anchor='center')
         self.instruments_list.grid(row=0, column=0, sticky=tk.W+tk.E+tk.N+tk.S)
-        
+
+        # Обработчики для фото
+        self.instruments_list.bind('<Motion>', self.on_instrument_list_motion)
+        self.instruments_list.bind('<Leave>', self.on_instrument_list_leave)
+
         # Скроллбар для списка
         scrollbar_list = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.instruments_list.yview)
         self.instruments_list.configure(yscroll=scrollbar_list.set)
@@ -1872,7 +1893,11 @@ class IssueInstrumentDialog:
         # Добавляем в список
         display_text = f"{selected_instrument[2]} - {selected_instrument[1]}"
         self.selected_instruments.append((instrument_id, display_text))
-        self.instruments_list.insert('', tk.END, values=(display_text,))
+
+        # Проверяем наличие фото
+        photo_icon = '📷' if instrument_id in self.instrument_photos else ''
+
+        self.instruments_list.insert('', tk.END, values=(display_text, photo_icon))
         
         # Очищаем поле ввода
         self.instrument_var.set('')
@@ -1985,12 +2010,123 @@ class IssueInstrumentDialog:
             error_text = "\n".join(error_messages)
             messagebox.showerror("Ошибка", f"Не удалось выдать инструменты:\n{error_text}")
 
+    def on_instrument_list_motion(self, event):
+        """Обработка движения мыши для показа фото"""
+        # Определяем элемент под курсором
+        region = self.instruments_list.identify_region(event.x, event.y)
+        if region == 'cell':
+            column = self.instruments_list.identify_column(event.x)
+            if column == '#2':  # Столбец с фото (индекс 2 в Treeview)
+                item = self.instruments_list.identify_row(event.y)
+                if item:
+                    # Получаем данные элемента
+                    values = self.instruments_list.item(item, 'values')
+                    if len(values) >= 2 and values[1] == '📷':  # Есть фото
+                        # Получаем instrument_id из selected_instruments
+                        try:
+                            item_index = self.instruments_list.index(item)
+                            if item_index < len(self.selected_instruments):
+                                instrument_id, _ = self.selected_instruments[item_index]
+
+                                if instrument_id and instrument_id in self.instrument_photos:
+                                    photo_path = self.instrument_photos[instrument_id]
+                                    import os
+                                    if photo_path and os.path.exists(photo_path):
+                                        # Запланируем показ фото с задержкой
+                                        if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+                                            self.dialog.after_cancel(self.photo_tooltip_job)
+                                        self.photo_tooltip_job = self.dialog.after(300, lambda p=photo_path: self.show_photo_tooltip(p))
+                                    return
+                        except:
+                            pass
+
+        # Если не над фото, скрываем tooltip
+        self.hide_photo_tooltip()
+
+    def on_instrument_list_leave(self, event):
+        """Обработка ухода мыши с виджета"""
+        if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+            self.dialog.after_cancel(self.photo_tooltip_job)
+            self.photo_tooltip_job = None
+        self.hide_photo_tooltip()
+
+    def show_photo_tooltip(self, photo_path):
+        """Показ всплывающего окна с фотографией"""
+        try:
+            self.hide_photo_tooltip()
+
+            from PIL import Image, ImageTk
+            import os
+
+            if not os.path.exists(photo_path):
+                return
+
+            # Загружаем изображение
+            img = Image.open(photo_path)
+
+            # Масштабируем изображение, сохраняя пропорции
+            max_size = (300, 300)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            photo = ImageTk.PhotoImage(img)
+
+            # Создаем всплывающее окно
+            self.photo_tooltip = tk.Toplevel(self.dialog)
+            self.photo_tooltip.overrideredirect(True)  # Убираем рамку окна
+            self.photo_tooltip.attributes('-topmost', True)  # Поверх всех окон
+
+            # Создаем Label с фотографией
+            photo_label = tk.Label(self.photo_tooltip, image=photo, bg='white', relief='solid', borderwidth=2)
+            photo_label.image = photo  # Сохраняем ссылку
+            photo_label.pack()
+
+            # Получаем координаты курсора
+            x = self.dialog.winfo_pointerx() + 15
+            y = self.dialog.winfo_pointery() + 15
+
+            # Корректируем позицию чтобы окно не выходило за границы экрана
+            screen_width = self.dialog.winfo_screenwidth()
+            screen_height = self.dialog.winfo_screenheight()
+
+            if x + img.width > screen_width:
+                x = screen_width - img.width - 10
+            if y + img.height > screen_height:
+                y = screen_height - img.height - 10
+
+            self.photo_tooltip.geometry(f"+{x}+{y}")
+
+        except Exception as e:
+            print(f"Ошибка показа фото: {e}")
+
+    def hide_photo_tooltip(self):
+        """Скрытие всплывающего окна с фотографией"""
+        if hasattr(self, 'photo_tooltip') and self.photo_tooltip:
+            try:
+                self.photo_tooltip.destroy()
+            except:
+                pass
+            self.photo_tooltip = None
+
 
 class BatchReturnDialog:
     def __init__(self, parent, db, callback):
         self.db = db
         self.callback = callback
         self.selected_issues = []
+
+        # Состояние сортировки
+        self.sort_column = None
+        self.sort_direction = 'asc'  # 'asc' или 'desc'
+
+        # Фильтрованные данные
+        self.filtered_data = []
+
+        # Словарь для хранения фото инструментов
+        self.instrument_photos = {}
+
+        # Для показа фото
+        self.photo_tooltip = None
+        self.photo_tooltip_job = None
 
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Массовая сдача инструментов")
@@ -2002,6 +2138,10 @@ class BatchReturnDialog:
 
         # Закрытие по ESC и через крестик с сохранением настроек
         def close_with_save():
+            # Скрываем фото перед закрытием
+            self._hide_photo_tooltip()
+            if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+                self.dialog.after_cancel(self.photo_tooltip_job)
             close_dialog_with_save(self.dialog, "BatchReturnDialog")
         self.dialog.protocol("WM_DELETE_WINDOW", close_with_save)
         self.dialog.bind('<Escape>', lambda e: close_with_save())
@@ -2012,6 +2152,16 @@ class BatchReturnDialog:
     def load_data(self):
         """Загрузка списка активных выдач"""
         self.issues_data = self.db.get_active_issues_for_return()
+        # Инициализируем фильтрованные данные
+        self.filtered_data = self.issues_data.copy()
+
+        # Заполняем словарь фото
+        self.instrument_photos.clear()
+        for issue in self.issues_data:
+            instrument_id = issue[1]  # instrument_id
+            photo_path = issue[9] if len(issue) > 9 else ''  # photo_path
+            if instrument_id and photo_path:
+                self.instrument_photos[instrument_id] = photo_path
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.dialog, padding="20")
@@ -2026,6 +2176,22 @@ class BatchReturnDialog:
 
         ttk.Label(title_frame, text=f"Найдено активных выдач: {len(self.issues_data)}").pack(side=tk.RIGHT)
 
+        # Фильтр и поиск
+        filter_frame = ttk.Frame(main_frame)
+        filter_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # Поле поиска
+        search_label = ttk.Label(filter_frame, text="Поиск:")
+        search_label.pack(side=tk.LEFT, padx=(0, 5))
+
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(filter_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self.search_entry.bind('<KeyRelease>', self.on_search_change)
+
+        # Кнопка сброса фильтра
+        ttk.Button(filter_frame, text="Сбросить фильтр", command=self.reset_filter).pack(side=tk.LEFT)
+
         # Таблица с чекбоксами
         table_frame = ttk.LabelFrame(main_frame, text="Выберите инструменты для возврата", padding="10")
         table_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
@@ -2039,17 +2205,18 @@ class BatchReturnDialog:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Treeview с чекбоксами
-        columns = ('select', 'id', 'inventory_number', 'name', 'employee', 'issue_date', 'expected_return')
+        columns = ('select', 'id', 'inventory_number', 'name', 'employee', 'issue_date', 'expected_return', 'photo')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings', yscrollcommand=scrollbar.set)
 
         # Настраиваем столбцы
         self.tree.heading('select', text='✓')
-        self.tree.heading('id', text='ID выдачи')
-        self.tree.heading('inventory_number', text='Инв. номер')
-        self.tree.heading('name', text='Инструмент')
-        self.tree.heading('employee', text='Сотрудник')
-        self.tree.heading('issue_date', text='Дата выдачи')
-        self.tree.heading('expected_return', text='Ожидаемый возврат')
+        self.tree.heading('id', text='ID выдачи', command=lambda: self.sort_by_column('id'))
+        self.tree.heading('inventory_number', text='Инв. номер', command=lambda: self.sort_by_column('inventory_number'))
+        self.tree.heading('name', text='Инструмент', command=lambda: self.sort_by_column('name'))
+        self.tree.heading('employee', text='Сотрудник', command=lambda: self.sort_by_column('employee'))
+        self.tree.heading('issue_date', text='Дата выдачи', command=lambda: self.sort_by_column('issue_date'))
+        self.tree.heading('expected_return', text='Ожидаемый возврат', command=lambda: self.sort_by_column('expected_return'))
+        self.tree.heading('photo', text='Фото')
 
         self.tree.column('select', width=50, anchor='center')
         self.tree.column('id', width=80, anchor='center')
@@ -2058,37 +2225,20 @@ class BatchReturnDialog:
         self.tree.column('employee', width=150, anchor='w')
         self.tree.column('issue_date', width=120, anchor='center')
         self.tree.column('expected_return', width=120, anchor='center')
+        self.tree.column('photo', width=60, anchor='center')
 
         # Заполняем таблицу данными
-        for issue in self.issues_data:
-            issue_id = issue[0]
-            inventory_number = issue[2]
-            name = issue[3]
-            employee = issue[4]
-            issue_date = issue[5].split(' ')[0] if issue[5] else ''
-            expected_return = issue[6] if issue[6] else ''
-
-            # Проверяем просроченность
-            is_overdue = False
-            if expected_return:
-                try:
-                    from datetime import datetime
-                    expected_date = datetime.strptime(expected_return, '%Y-%m-%d').date()
-                    if expected_date < datetime.now().date():
-                        is_overdue = True
-                except:
-                    pass
-
-            # Определяем тег для подсветки просроченных
-            tags = ('overdue',) if is_overdue else ()
-
-            self.tree.insert('', 'end', values=('☐', issue_id, inventory_number, name, employee, issue_date, expected_return), tags=tags)
+        self.populate_tree()
 
         # Настраиваем цвета для просроченных
         self.tree.tag_configure('overdue', background='#ffe6e6')
 
         # Обработчик клика по чекбоксу
         self.tree.bind('<Button-1>', self.on_tree_click)
+
+        # Обработчики для фото
+        self.tree.bind('<Motion>', self.on_mouse_motion)
+        self.tree.bind('<Leave>', self.on_mouse_leave)
 
         self.tree.pack(fill=tk.BOTH, expand=True)
         scrollbar.config(command=self.tree.yview)
@@ -2198,13 +2348,234 @@ class BatchReturnDialog:
         else:
             messagebox.showerror("Ошибка", message, parent=self.dialog)
 
+    def populate_tree(self):
+        """Заполнение таблицы данными с учетом фильтрации и сортировки"""
+        # Очистка таблицы
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Используем фильтрованные данные
+        data_to_display = self.filtered_data if self.filtered_data else self.issues_data
+
+        for issue in data_to_display:
+            issue_id = issue[0]
+            instrument_id = issue[1]
+            inventory_number = issue[2]
+            name = issue[3]
+            employee = issue[4]
+            issue_date = issue[5].split(' ')[0] if issue[5] else ''
+            expected_return = issue[6] if issue[6] else ''
+
+            # Проверяем просроченность
+            is_overdue = False
+            if expected_return:
+                try:
+                    from datetime import datetime
+                    expected_date = datetime.strptime(expected_return, '%Y-%m-%d').date()
+                    if expected_date < datetime.now().date():
+                        is_overdue = True
+                except:
+                    pass
+
+            # Определяем тег для подсветки просроченных
+            tags = ('overdue',) if is_overdue else ()
+
+            # Проверяем наличие фото
+            photo_icon = '📷' if instrument_id in self.instrument_photos else ''
+
+            self.tree.insert('', 'end', values=('☐', issue_id, inventory_number, name, employee, issue_date, expected_return, photo_icon), tags=tags)
+
+        # Обновляем счетчик найденных записей
+        self.update_found_count()
+
+    def on_search_change(self, event=None):
+        """Обработка изменения текста поиска"""
+        self.apply_filter_and_sort()
+
+    def reset_filter(self):
+        """Сброс фильтра поиска"""
+        self.search_var.set("")
+        self.apply_filter_and_sort()
+
+    def apply_filter_and_sort(self):
+        """Применение фильтра и сортировки"""
+        search_text = self.search_var.get().lower().strip()
+
+        # Фильтрация данных
+        if search_text:
+            self.filtered_data = []
+            for issue in self.issues_data:
+                # Поиск по всем текстовым полям
+                searchable_text = f"{issue[2]} {issue[3]} {issue[4]} {issue[5] or ''} {issue[6] or ''}".lower()
+                if search_text in searchable_text:
+                    self.filtered_data.append(issue)
+        else:
+            self.filtered_data = self.issues_data.copy()
+
+        # Применение сортировки
+        if self.sort_column:
+            self.filtered_data.sort(key=lambda x: self.get_sort_value(x, self.sort_column),
+                                   reverse=(self.sort_direction == 'desc'))
+
+        # Обновление отображения
+        self.populate_tree()
+
+    def sort_by_column(self, column):
+        """Сортировка по столбцу"""
+        if self.sort_column == column:
+            # Переключаем направление сортировки
+            self.sort_direction = 'desc' if self.sort_direction == 'asc' else 'asc'
+        else:
+            # Новая колонка - начинаем с возрастания
+            self.sort_column = column
+            self.sort_direction = 'asc'
+
+        self.apply_filter_and_sort()
+
+    def get_sort_value(self, issue, column):
+        """Получение значения для сортировки по столбцу"""
+        column_map = {
+            'id': 0,  # issue_id
+            'inventory_number': 2,
+            'name': 3,
+            'employee': 4,
+            'issue_date': 5,
+            'expected_return': 6
+        }
+
+        index = column_map.get(column, 0)
+        value = issue[index] if index < len(issue) else ''
+
+        # Для дат пытаемся преобразовать
+        if column in ['issue_date', 'expected_return'] and value:
+            try:
+                from datetime import datetime
+                return datetime.strptime(value.split(' ')[0], '%Y-%m-%d')
+            except:
+                pass
+
+        # Для пустых значений возвращаем пустую строку
+        return value or ''
+
+    def update_found_count(self):
+        """Обновление счетчика найденных записей"""
+        count = len(self.filtered_data) if self.filtered_data else len(self.issues_data)
+        # Найдем и обновим лейбл с количеством
+        for widget in self.dialog.winfo_children():
+            if isinstance(widget, ttk.Frame):
+                for child in widget.winfo_children():
+                    if isinstance(child, ttk.Label) and "Найдено активных выдач:" in str(child.cget('text')):
+                        child.config(text=f"Найдено активных выдач: {count}")
+                        break
+
+    def on_mouse_motion(self, event):
+        """Обработка движения мыши для показа фото"""
+        # Определяем элемент под курсором
+        region = self.tree.identify_region(event.x, event.y)
+        if region == 'cell':
+            column = self.tree.identify_column(event.x)
+            if column == '#8':  # Столбец с фото (индекс 8 в Treeview)
+                item = self.tree.identify_row(event.y)
+                if item:
+                    # Получаем данные элемента
+                    values = self.tree.item(item, 'values')
+                    if len(values) >= 8 and values[7] == '📷':  # Есть фото
+                        # Получаем instrument_id из исходных данных
+                        issue_id = int(values[1])
+                        instrument_id = None
+                        for issue in self.issues_data:
+                            if issue[0] == issue_id:
+                                instrument_id = issue[1]
+                                break
+
+                        if instrument_id and instrument_id in self.instrument_photos:
+                            photo_path = self.instrument_photos[instrument_id]
+                            import os
+                            if photo_path and os.path.exists(photo_path):
+                                # Запланируем показ фото с задержкой
+                                if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+                                    self.dialog.after_cancel(self.photo_tooltip_job)
+                                self.photo_tooltip_job = self.dialog.after(300, lambda p=photo_path: self._show_photo_tooltip(p))
+                            return
+
+        # Если не над фото, скрываем tooltip
+        self._hide_photo_tooltip()
+
+    def on_mouse_leave(self, event):
+        """Обработка ухода мыши с виджета"""
+        if hasattr(self, 'photo_tooltip_job') and self.photo_tooltip_job:
+            self.dialog.after_cancel(self.photo_tooltip_job)
+            self.photo_tooltip_job = None
+        self._hide_photo_tooltip()
+
+    def _show_photo_tooltip(self, photo_path):
+        """Показ всплывающего окна с фотографией"""
+        try:
+            self._hide_photo_tooltip()
+
+            from PIL import Image, ImageTk
+            import os
+
+            if not os.path.exists(photo_path):
+                return
+
+            # Загружаем изображение
+            img = Image.open(photo_path)
+
+            # Масштабируем изображение, сохраняя пропорции
+            max_size = (300, 300)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            photo = ImageTk.PhotoImage(img)
+
+            # Создаем всплывающее окно
+            self.photo_tooltip = tk.Toplevel(self.dialog)
+            self.photo_tooltip.overrideredirect(True)  # Убираем рамку окна
+            self.photo_tooltip.attributes('-topmost', True)  # Поверх всех окон
+
+            # Создаем Label с фотографией
+            photo_label = tk.Label(self.photo_tooltip, image=photo, bg='white', relief='solid', borderwidth=2)
+            photo_label.image = photo  # Сохраняем ссылку
+            photo_label.pack()
+
+            # Получаем координаты курсора
+            x = self.dialog.winfo_pointerx() + 15
+            y = self.dialog.winfo_pointery() + 15
+
+            # Корректируем позицию чтобы окно не выходило за границы экрана
+            screen_width = self.dialog.winfo_screenwidth()
+            screen_height = self.dialog.winfo_screenheight()
+
+            if x + img.width > screen_width:
+                x = screen_width - img.width - 10
+            if y + img.height > screen_height:
+                y = screen_height - img.height - 10
+
+            self.photo_tooltip.geometry(f"+{x}+{y}")
+
+        except Exception as e:
+            print(f"Ошибка показа фото: {e}")
+
+    def _hide_photo_tooltip(self):
+        """Скрытие всплывающего окна с фотографией"""
+        if hasattr(self, 'photo_tooltip') and self.photo_tooltip:
+            try:
+                self.photo_tooltip.destroy()
+            except:
+                pass
+            self.photo_tooltip = None
+
 
 class ReturnInstrumentDialog:
     def __init__(self, parent, db, issue_id, callback):
         self.db = db
         self.issue_id = issue_id
         self.callback = callback
-        
+
+        # Для показа фото
+        self.photo_tooltip = None
+        self.photo_tooltip_job = None
+
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Оформить возврат")
         default_geometry = "500x400"
@@ -2232,18 +2603,49 @@ class ReturnInstrumentDialog:
         # Информация о выдаче
         info_frame = ttk.LabelFrame(main_frame, text="Информация о выдаче", padding="10")
         info_frame.pack(fill=tk.X, pady=10)
-        
-        ttk.Label(info_frame, text=f"Инв. номер: {self.issue[2]}").pack(anchor=tk.W)
-        ttk.Label(info_frame, text=f"Инструмент: {self.issue[3]}").pack(anchor=tk.W)
-        ttk.Label(info_frame, text=f"Сотрудник: {self.issue[5]}").pack(anchor=tk.W)
-        ttk.Label(info_frame, text=f"Дата выдачи: {self.issue[6]}").pack(anchor=tk.W)
-        
+
+        # Создаем фрейм для основной информации и фото
+        content_frame = ttk.Frame(info_frame)
+        content_frame.pack(fill=tk.X)
+
+        # Левая часть - текстовая информация
+        text_frame = ttk.Frame(content_frame)
+        text_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Label(text_frame, text=f"Инв. номер: {self.issue[2]}").pack(anchor=tk.W)
+        ttk.Label(text_frame, text=f"Инструмент: {self.issue[3]}").pack(anchor=tk.W)
+        ttk.Label(text_frame, text=f"Сотрудник: {self.issue[5]}").pack(anchor=tk.W)
+        ttk.Label(text_frame, text=f"Дата выдачи: {self.issue[6]}").pack(anchor=tk.W)
+
         address_display = self.issue[11] or self.issue[10]
         if address_display:
-            ttk.Label(info_frame, text=f"Адрес: {address_display}").pack(anchor=tk.W)
-        
+            ttk.Label(text_frame, text=f"Адрес: {address_display}").pack(anchor=tk.W)
+
         if self.issue[8]:
-            ttk.Label(info_frame, text=f"Примечание при выдаче: {self.issue[8]}").pack(anchor=tk.W)
+            ttk.Label(text_frame, text=f"Примечание при выдаче: {self.issue[8]}").pack(anchor=tk.W)
+
+        # Правая часть - фото
+        if len(self.issue) > 12 and self.issue[12]:  # photo_path
+            import os
+            if os.path.exists(self.issue[12]):
+                photo_frame = ttk.Frame(content_frame)
+                photo_frame.pack(side=tk.RIGHT, padx=(10, 0))
+
+                # Создаем миниатюру фото
+                try:
+                    from PIL import Image, ImageTk
+                    img = Image.open(self.issue[12])
+                    img.thumbnail((80, 80), Image.Resampling.LANCZOS)
+                    photo = ImageTk.PhotoImage(img)
+
+                    photo_label = tk.Label(photo_frame, image=photo, cursor="hand2", relief='solid', borderwidth=1)
+                    photo_label.image = photo  # Сохраняем ссылку
+                    photo_label.pack()
+                    photo_label.bind('<Enter>', lambda e: self.show_photo_tooltip(self.issue[12]))
+                    photo_label.bind('<Leave>', lambda e: self.hide_photo_tooltip())
+
+                except Exception as e:
+                    print(f"Ошибка загрузки фото: {e}")
         
         # Форма возврата
         return_frame = ttk.LabelFrame(main_frame, text="Возврат", padding="10")
@@ -2292,4 +2694,61 @@ class ReturnInstrumentDialog:
             close_dialog_with_save(self.dialog, "ReturnInstrumentDialog")
         else:
             messagebox.showerror("Ошибка", message)
+
+    def show_photo_tooltip(self, photo_path):
+        """Показ всплывающего окна с фотографией"""
+        try:
+            self.hide_photo_tooltip()
+
+            from PIL import Image, ImageTk
+            import os
+
+            if not os.path.exists(photo_path):
+                return
+
+            # Загружаем изображение
+            img = Image.open(photo_path)
+
+            # Масштабируем изображение, сохраняя пропорции
+            max_size = (300, 300)
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+
+            photo = ImageTk.PhotoImage(img)
+
+            # Создаем всплывающее окно
+            self.photo_tooltip = tk.Toplevel(self.dialog)
+            self.photo_tooltip.overrideredirect(True)  # Убираем рамку окна
+            self.photo_tooltip.attributes('-topmost', True)  # Поверх всех окон
+
+            # Создаем Label с фотографией
+            photo_label = tk.Label(self.photo_tooltip, image=photo, bg='white', relief='solid', borderwidth=2)
+            photo_label.image = photo  # Сохраняем ссылку
+            photo_label.pack()
+
+            # Получаем координаты курсора
+            x = self.dialog.winfo_pointerx() + 15
+            y = self.dialog.winfo_pointery() + 15
+
+            # Корректируем позицию чтобы окно не выходило за границы экрана
+            screen_width = self.dialog.winfo_screenwidth()
+            screen_height = self.dialog.winfo_screenheight()
+
+            if x + img.width > screen_width:
+                x = screen_width - img.width - 10
+            if y + img.height > screen_height:
+                y = screen_height - img.height - 10
+
+            self.photo_tooltip.geometry(f"+{x}+{y}")
+
+        except Exception as e:
+            print(f"Ошибка показа фото: {e}")
+
+    def hide_photo_tooltip(self):
+        """Скрытие всплывающего окна с фотографией"""
+        if hasattr(self, 'photo_tooltip') and self.photo_tooltip:
+            try:
+                self.photo_tooltip.destroy()
+            except:
+                pass
+            self.photo_tooltip = None
 

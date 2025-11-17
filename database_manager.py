@@ -46,6 +46,58 @@ class DatabaseManager:
         if self._is_database_empty():
             self.insert_sample_data()
 
+    def get_statistics(self):
+        """Получение общей статистики системы"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            stats = {}
+
+            # Статистика инструментов
+
+            # Общее количество инструментов
+            cursor.execute("SELECT COUNT(*) FROM instruments")
+            stats['total_instruments'] = cursor.fetchone()[0]
+
+            # Количество по статусам
+            cursor.execute("SELECT status, COUNT(*) FROM instruments GROUP BY status")
+            status_counts = dict(cursor.fetchall())
+
+            stats['available_instruments'] = status_counts.get('Доступен', 0)
+            stats['issued_instruments'] = status_counts.get('Выдан', 0)
+            stats['repair_instruments'] = status_counts.get('На ремонте', 0)
+
+            # Статистика сотрудников
+            cursor.execute("SELECT COUNT(*) FROM employees WHERE status = 'Активен'")
+            stats['total_employees'] = cursor.fetchone()[0]
+
+            # Активные выдачи
+            cursor.execute("SELECT COUNT(*) FROM issues WHERE status = 'Выдан'")
+            stats['active_issues'] = cursor.fetchone()[0]
+
+            # Просроченные возвраты
+            cursor.execute("""
+                SELECT COUNT(*) FROM issues
+                WHERE status = 'Выдан'
+                AND expected_return_date < date('now')
+            """)
+            stats['overdue_issues'] = cursor.fetchone()[0]
+
+            conn.close()
+            return stats
+
+        except Exception as e:
+            print(f"Ошибка получения статистики: {e}")
+            return {
+                'total_instruments': 0,
+                'available_instruments': 0,
+                'issued_instruments': 0,
+                'repair_instruments': 0,
+                'total_employees': 0,
+                'active_issues': 0,
+                'overdue_issues': 0
+            }
+
     def _is_database_empty(self):
         """Проверка, пустая ли база данных"""
         try:
@@ -509,7 +561,7 @@ class DatabaseManager:
         cursor = conn.cursor()
         
         cursor.execute("""
-            SELECT 
+            SELECT
                 i.id,
                 i.instrument_id,
                 ins.inventory_number,
@@ -521,7 +573,8 @@ class DatabaseManager:
                 i.notes,
                 i.address_id,
                 COALESCE(a.name, ''),
-                COALESCE(a.full_address, '')
+                COALESCE(a.full_address, ''),
+                ins.photo_path
             FROM issues i
             JOIN instruments ins ON i.instrument_id = ins.id
             JOIN employees e ON i.employee_id = e.id

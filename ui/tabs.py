@@ -358,3 +358,4 @@ class TabManager:
         # tree.bind('<Double-1>', self._on_return_double_click)
 
 
+
